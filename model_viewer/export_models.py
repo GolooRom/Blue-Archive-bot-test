@@ -30,6 +30,7 @@ from pathlib import Path
 
 import numpy as np
 import UnityPy
+from PIL import Image
 from UnityPy.enums import ArchiveFlags, CompressionFlags
 from UnityPy.environment import simplify_name
 from UnityPy.helpers import CompressionHelper
@@ -100,8 +101,9 @@ ANIMATION_VARIANT_PREFIX_RE = re.compile(r"^([a-z]+)\d+(?=_|$)")
 HEAD_BONE = "Bip001 Head"
 
 # Mouth expressions are events, not curves: SetMouthTile(row * 100 + col), the
-# row counted from the bottom of the atlas (Unity's UV origin).
-MOUTH_EVENT = "SetMouthTile"
+# row counted from the bottom of the atlas (Unity's UV origin).  The flipped
+# event shows the same tile mirrored left to right.
+MOUTH_EVENTS = {"SetMouthTile": False, "SetHorizontallyFlippedMouthTile": True}
 MOUTH_DEFAULT_EVENT = "SetMouthTileToDefault"
 
 # A spare face is a mesh of its own, switched by the clips, and recognised by
@@ -667,16 +669,17 @@ def is_character_clip(clip, targets: dict[int, object], character: str) -> bool:
     return binding_coverage(clip, targets) >= MIN_CHARACTER_BINDING_COVERAGE
 
 
-def mouth_events(clips) -> dict[tuple[str, int], list[tuple[float, int | None]]]:
-    """{clip key: [(time, tile id)]}; None means SetMouthTileToDefault, which
-    restores the tile the material itself is saved with.  Ties go to the last
-    event at that time."""
+def mouth_events(clips) -> dict[tuple[str, int], list[tuple[float, tuple[int, bool] | None]]]:
+    """{clip key: [(time, (tile id, flipped))]}; None means
+    SetMouthTileToDefault, which restores the tile the material itself is
+    saved with.  Ties go to the last event at that time."""
     tracks = {}
     for clip in clips:
-        keys: dict[float, int | None] = {}
+        keys: dict[float, tuple[int, bool] | None] = {}
         for event in getattr(clip, "m_Events", None) or []:
-            if event.functionName == MOUTH_EVENT:
-                keys[float(event.time)] = int(event.intParameter)
+            if event.functionName in MOUTH_EVENTS:
+                keys[float(event.time)] = (int(event.intParameter),
+                                           MOUTH_EVENTS[event.functionName])
             elif event.functionName == MOUTH_DEFAULT_EVENT:
                 keys[float(event.time)] = None
         if keys:
@@ -1232,11 +1235,11 @@ class ModelData:
     textures: dict[str, bytes] = field(default_factory=dict)  # name -> png bytes
     seen_meshes: set = field(default_factory=set)
     # mouth expressions: each clip's event track, and the node carrying each
-    # tile's copy of the mouth quad
-    mouth_events: dict[tuple[str, int], list[tuple[float, int | None]]] = \
+    # tile's copy of the mouth quad, keyed by (tile id, flipped)
+    mouth_events: dict[tuple[str, int], list[tuple[float, tuple[int, bool] | None]]] = \
         field(default_factory=dict)
-    mouth_nodes: dict[int, int] = field(default_factory=dict)
-    mouth_default: int | None = None
+    mouth_nodes: dict[tuple[int, bool], int] = field(default_factory=dict)
+    mouth_default: tuple[int, bool] | None = None
     mouth_owner: tuple | None = None            # transform the quads came off
     # alternate faces, keyed by the transform of the mesh each one is
     face_meshes: dict[tuple, int] = field(default_factory=dict)
@@ -1311,9 +1314,16 @@ def texture_png(texture) -> bytes | None:
     return buf.getvalue()
 
 
-def tile_material(model: ModelData, texture, image, grid, tile: int, prefix: str,
+def tile_label(key: tuple[int, bool]) -> str:
+    tile, flipped = key
+    return f"{tile}_Flipped" if flipped else str(tile)
+
+
+def tile_material(model: ModelData, texture, image, grid, key: tuple[int, bool], prefix: str,
                   alpha: tuple[str, float]) -> str | None:
-    """Crop one tile out of the expression atlas and give it a material."""
+    """Crop one tile out of the expression atlas, mirrored if flipped, and give
+    it a material."""
+    tile, flipped = key
     row, column = divmod(tile, 100)
     if not (0 <= column < grid[0] and 0 <= row < grid[1]):
         print(f"  mouth tile {tile} falls outside the atlas; ignored")
@@ -1321,13 +1331,15 @@ def tile_material(model: ModelData, texture, image, grid, tile: int, prefix: str
     size = np.array(image.size) / grid
     # Unity's UV origin is bottom-left, the image's is top-left.
     left, top = column * size[0], image.size[1] - (row + 1) * size[1]
-    name = f"{texture.m_Name}_{column}_{row}"
+    name = f"{texture.m_Name}_{column}_{row}" + ("_flipped" if flipped else "")
     if name not in model.textures:
         crop = image.crop((round(left), round(top), round(left + size[0]), round(top + size[1])))
+        if flipped:
+            crop = crop.transpose(Image.Transpose.FLIP_LEFT_RIGHT)
         buf = io.BytesIO()
         crop.convert("RGBA").save(buf, format="PNG")
         model.textures[name] = buf.getvalue()
-    material = f"{prefix}_Mouth_{tile}"
+    material = f"{prefix}_Mouth_{tile_label(key)}"
     model.materials.setdefault(
         material, {"color": [1.0, 1.0, 1.0, 1.0], "texture": name, "mouth": None,
                    "alpha": alpha})
@@ -1349,6 +1361,10 @@ def mouth_tile(name: str, tex_envs: dict, floats: dict, model: ModelData,
     sampler wraps away (1.625 on an 8-wide grid is column 5, not 13), and a
     negative scale mirrors the axis, putting the offset on the tile's far edge
     and the tile itself one cell back.
+
+    A horizontal mirror is what the flipped event sets, so it belongs to the
+    tile: the default is that tile flipped, and the quad's UVs stay unmirrored
+    in U so that the events' unflipped tiles read the right way round.
     """
     tex_env = tex_envs.get("_MouthTileTex")
     if tex_env is None or tex_env.m_Texture is None or not tex_env.m_Texture.path_id:
@@ -1365,19 +1381,19 @@ def mouth_tile(name: str, tex_envs: dict, floats: dict, model: ModelData,
     offset = np.array([tex_env.m_Offset.x, tex_env.m_Offset.y])
     mirror = scale < 0
     column, row = ((offset * grid).round().astype(int) - mirror) % grid.astype(int)
-    default = row * 100 + column
+    default = (int(row * 100 + column), bool(mirror[0]))
 
-    wanted = {default} | {tile for track in model.mouth_events.values()
-                          for _, tile in track if tile is not None}
+    wanted = {default} | {key for track in model.mouth_events.values()
+                          for _, key in track if key is not None}
     tiles = {}
-    for tile in sorted(wanted):
-        material = tile_material(model, texture, image, grid, tile, name, alpha)
+    for key in sorted(wanted):
+        material = tile_material(model, texture, image, grid, key, name, alpha)
         if material is not None:
-            tiles[tile] = material
+            tiles[key] = material
     if default not in tiles:
         return None
     return {"material": tiles[default], "window": 1.0 / (grid * np.abs(scale)),
-            "mirror": mirror, "default": default, "tiles": tiles}
+            "mirror": mirror & [False, True], "default": default, "tiles": tiles}
 
 
 def split_mouth(uv: np.ndarray, primitives: list, model: ModelData) -> tuple[int, dict] | None:
@@ -1438,12 +1454,12 @@ def mouth_quads(scene: Scene, model: ModelData, skin: int | None, joints, weight
     collapse = (quad.mean(axis=0) - quad).astype(np.float32)
 
     del primitives[index]
-    for tile, material in sorted(mouth["tiles"].items()):
-        node = scene.add({"name": f"Mouth_{tile}",
-                          "weights": [0.0 if tile == mouth["default"] else 1.0]})
-        model.mouth_nodes[tile] = node
+    for key, material in sorted(mouth["tiles"].items()):
+        node = scene.add({"name": f"Mouth_{tile_label(key)}",
+                          "weights": [0.0 if key == mouth["default"] else 1.0]})
+        model.mouth_nodes[key] = node
         model.meshes.append(MeshData(
-            f"Mouth_{tile}", quad, normals[vertices], uvs[vertices],
+            f"Mouth_{tile_label(key)}", quad, normals[vertices], uvs[vertices],
             joints[vertices], weights[vertices], [(remap[triangles], material)],
             skin, None, node, collapse))
     model.mouth_default = mouth["default"]

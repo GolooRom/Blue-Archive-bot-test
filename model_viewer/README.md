@@ -189,16 +189,19 @@ material. The quad is either part of the eye submesh or a submesh of its own.
 The default tile is `uv * scale + offset` read back from `_MouthTileTex`. An
 offset past 1 wraps around (Ui's 1.625 is column 5 of 8, not 13), and a
 negative scale mirrors the axis, which puts the offset on the far edge of the
-tile, so the tile is one cell back.
+tile, so the tile is one cell back. A horizontal mirror counts as part of the
+tile (see below): Reisa's material is saved with tile 704 flipped.
 
 **Expressions.** Clips change the mouth with `AnimationEvent`s:
 `SetMouthTile(row * 100 + col)`, with rows counted from the bottom of the atlas,
-or `SetMouthTileToDefault()` for the material's own tile. glTF cannot animate a
-UV offset. So the exporter crops every tile the clips use and gives each one its
-own copy of the mouth quad. Each copy has one morph target that collapses it to
-a point. A clip shows a tile by holding that copy's weight at 0 and all the
-others at 1, with `STEP` interpolation. The copies keep their skinning, because
-some characters rig the mouth to its own `bone_mouth`.
+`SetHorizontallyFlippedMouthTile(row * 100 + col)` for the same tile mirrored
+left to right, or `SetMouthTileToDefault()` for the material's own tile. A
+flipped tile is cropped and mirrored as a tile of its own (`Mouth_602_Flipped`).
+glTF cannot animate a UV offset. So the exporter crops every tile the clips use
+and gives each one its own copy of the mouth quad. Each copy has one morph
+target that collapses it to a point. A clip shows a tile by holding that copy's
+weight at 0 and all the others at 1, with `STEP` interpolation. The copies keep
+their skinning, because some characters rig the mouth to its own `bone_mouth`.
 
 **Spare faces.** Some characters have extra face meshes for brief expressions
 (Kasumi's star eyes, Aoba's blank stare, Neru's joke glasses). They ship enabled
