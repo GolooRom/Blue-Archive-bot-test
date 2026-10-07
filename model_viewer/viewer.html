@@ -26,11 +26,8 @@
 <div class="model-viewer" data-height="600" data-shading="unlit" data-camera="0,5,1" data-preload="eager"
      data-anim-default="Cafe_Reaction" data-autoplay="1" data-loop="1"
      data-hide-parts="optional" data-outline="1" data-outline-width="25" hidden>
-  <!-- data-hide-parts matches the `optional` extras export_models.py writes onto
-       props the default clip leaves at rest; clips that use a prop name its group
-       in their own `show` extras, which needs a gadget built after that change was
-       added. jsDelivr caches an @dist URL for hours;
-       purge.jsdelivr.net/gh/<repo>@dist/<path> forces it. -->
+  <!-- data-hide-parts="optional" hides the props export_models.py flags; clips
+       that use a prop list its group under `show` in their own extras. -->
   <div class="model-viewer-controls" data-controls="model,anim,play,scrub,speed,loop"></div>
   <div class="model-viewer-controls" data-controls="outline,outline-width,outline-color"></div>
   <div class="model-viewer-controls" data-controls="shading,autorotate,grid,reset,fullscreen"></div>
@@ -80,10 +77,9 @@ window.mw = window.mw || (function () {
     return;
   }
 
-  // "Name=url" pairs, as the gadget's data-models expects; the label is the
-  // wiki's name, which is why export_models.py keeps commas out of them. The
-  // mtime query string busts the browser cache (python -m http.server sends
-  // no Cache-Control).
+  // "Name=url" pairs, as the gadget's data-models expects; a model name with a
+  // comma would break this list. The mtime query string busts the browser
+  // cache (python -m http.server sends no Cache-Control).
   container.dataset.models = files
     .map(([file, mtime]) => `${file.replace(/\.glb$/, '')}=models/${encodeURI(file)}?${mtime}`)
     .join(',');

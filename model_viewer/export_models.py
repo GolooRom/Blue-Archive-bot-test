@@ -59,10 +59,10 @@ UNITY_TO_GLTF = np.array([-1.0, 1.0, 1.0])
 QUAT_TO_GLTF = np.array([1.0, -1.0, -1.0, 1.0])
 FLIP = np.diag([-1.0, 1.0, 1.0, 1.0])
 
-# The clip the viewer opens on, and so the one that decides which props count
-# as part of the character at rest: Cafe_Reaction, the first sorted clip,
-# falling back to the first clip when absent. Keep this in sync with
-# data-anim-default in viewer.html.
+# The clip the viewer opens on. It decides the rest state of switched parts
+# and which props count as part of the character; without it, mark_props()
+# uses the first clip in bundle order. Keep in sync with data-anim-default in
+# viewer.html and Module:ModelViewer.
 DEFAULT_CLIP = "Cafe_Reaction"
 
 # A few characters sit in the cafe as a separate body, `<name>_CafeOnly_Mesh`,
@@ -95,16 +95,17 @@ ANIMATION_PREFIX_ORDER = (
 )
 ANIMATION_VARIANT_PREFIX_RE = re.compile(r"^([a-z]+)\d+(?=_|$)")
 
-# Mouth expressions are events, not curves: SetMouthTile(row * 100 + col), the
-# row counted from the bottom of the atlas (Unity's UV origin).
+# The halo's fallback attachment when the runtime prefab gives no follower.
 HEAD_BONE = "Bip001 Head"
 
+# Mouth expressions are events, not curves: SetMouthTile(row * 100 + col), the
+# row counted from the bottom of the atlas (Unity's UV origin).
 MOUTH_EVENT = "SetMouthTile"
 MOUTH_DEFAULT_EVENT = "SetMouthTileToDefault"
 
-# A momentary expression is a mesh of its own, switched by the clips.  The
-# mesh's name is no guide; its materials are.  The everyday face is the one
-# holding the mouth the clips lip-sync.
+# A spare face is a mesh of its own, switched by the clips, and recognised by
+# its materials rather than its name.  The everyday face holds the mouth the
+# clips lip-sync.
 FACE_MATERIAL = "_face"
 MOUTH_MATERIAL = "_eyemouth"
 BODY_MATERIALS = ("_body", "_hair")
@@ -716,9 +717,10 @@ def visibility_tracks(clips, children_of, targets: dict[int, object]) -> tuple[d
     """The event tracks and the curve tracks, each {object: {clip: {time: shown}}}.
 
     A clip switches an object either by an AniEvt event, whose number is an
-    index into `children_of(clip)`, or by animating the GameObject's active flag, which
-    is never in doubt.  The two are kept apart for plan_switches to weigh.
-    Later events at the same time win.
+    index into `children_of(clip)`, or by a curve on the GameObject's active
+    flag or the renderer's enabled flag, which names its target by path.  The
+    two are kept apart because plan_switches may drop the events.  Later
+    events at the same time win.
     """
     events: dict[tuple, dict[tuple, dict[float, bool]]] = defaultdict(lambda: defaultdict(dict))
     curves: dict[tuple, dict[tuple, dict[float, bool]]] = defaultdict(lambda: defaultdict(dict))
@@ -744,7 +746,7 @@ def visibility_tracks(clips, children_of, targets: dict[int, object]) -> tuple[d
 
 
 def merge_tracks(*sources: dict) -> dict:
-    """The tracks of several sources, one dict of {mesh: {clip: {time: shown}}}."""
+    """The tracks of several sources, one dict of {object: {clip: {time: shown}}}."""
     merged: dict[tuple, dict[tuple, dict[float, bool]]] = defaultdict(lambda: defaultdict(dict))
     for source in sources:
         for target, by_clip in source.items():
@@ -805,10 +807,9 @@ def plan_switches(scene: Scene, model: ModelData, children: list, off: set, clip
     orders its children differently.
 
     A clip that switches off every skinned mesh but the faces and mouth makes the
-    character vanish, as Izuna does in her EX.  A fold cannot do that: a
-    skinned vertex pulled to the centre still follows its own bones, so the
-    mesh smears into a sheet between them, and the halo stays up.  Such
-    clips keep everything as it is at rest.
+    character vanish, as Izuna does in her EX.  A fold cannot do that cleanly
+    (the skinned vertices smear between their bones, and the halo stays up),
+    so such clips keep every switch at rest.
     """
     def children_of(clip) -> list:
         if cafe_children is not None and is_cafe_clip(clip, model.name):
@@ -823,8 +824,8 @@ def plan_switches(scene: Scene, model: ModelData, children: list, off: set, clip
         model.face_default = everyday_face(model)
     tracks = merge_tracks(events, curves)
     model.face_tracks = tracks
-    # Events that disagree with the character about her rest face are indexing
-    # something this cannot see; drop them and keep the everyday face.
+    # Events that leave the idle clip in a spare face are indexing something
+    # this cannot see; drop them all and keep only the curves.
     idle = next((clip for clip in clips
                  if clip_name(clip.m_Name, model.name) == DEFAULT_CLIP), None)
     if (model.face_nodes and idle is not None
@@ -877,14 +878,11 @@ def plan_switches(scene: Scene, model: ModelData, children: list, off: set, clip
 
 
 def fold(scene: Scene, data: MeshData) -> int:
-    """Give a mesh the morph target that folds it to a point; its node.
+    """Give a mesh the morph target that folds it to its centre; its node.
 
-    A skinned vertex still follows its own bones once folded, so the point
-    tears into shards as the pose leaves the bind pose, the further the more
-    bones the mesh spans.  Folding each vertex onto its own bone instead
-    leaves a web between the bones even at rest, and is worse for the faces
-    the clips swap, which hang off the head alone.  A clip that keeps a mesh
-    off throughout hides it outright as well; see `write_glb`.
+    A skinned vertex still follows its own bones once folded, so the fold
+    tears into shards as the pose leaves the bind pose.  A clip that keeps a
+    mesh off throughout also hides it outright; see `write_glb`.
     """
     data.morph = (data.positions.mean(axis=0) - data.positions).astype(np.float32)
     return mesh_node(scene, data)
@@ -1257,10 +1255,9 @@ def mouth_tile(name: str, tex_envs: dict, floats: dict, model: ModelData,
 
     That tile is `uv * scale + offset` read back, and neither term is tidy: an
     offset past 1 counts a tile off from a second copy of the atlas, which the
-    sampler wraps away, and a negative scale mirrors the axis, putting the
-    offset on the tile's far edge and the tile itself one cell back. For
-    example, 1.625 wraps to column 5 rather than 13, while a negative scale
-    requires subtracting one cell before wrapping.
+    sampler wraps away (1.625 on an 8-wide grid is column 5, not 13), and a
+    negative scale mirrors the axis, putting the offset on the tile's far edge
+    and the tile itself one cell back.
     """
     tex_env = tex_envs.get("_MouthTileTex")
     if tex_env is None or tex_env.m_Texture is None or not tex_env.m_Texture.path_id:
@@ -1300,8 +1297,8 @@ def split_mouth(uv: np.ndarray, primitives: list, model: ModelData) -> tuple[int
     those UVs in place is safe because nothing else uses the mouth quad's
     vertices, which is checked rather than assumed.  Some characters give the
     mouth its own primitive, making the whole primitive the quad; otherwise a
-    shared eye/mouth primitive is split. A primitive whose UVs never reach the
-    tile is geometry with no UVs at all, not the quad.
+    shared eye/mouth primitive is split.  A whole primitive whose UVs all sit
+    near zero is geometry without UVs, not the quad.
     """
     for index, (triangles, material) in enumerate(list(primitives)):
         mouth = model.materials.get(material, {}).get("mouth")
@@ -1577,13 +1574,11 @@ def has_ancestor(transform, ancestor) -> bool:
 
 
 def attach_halo(scene: Scene, roots: list, prefab_halo=None) -> None:
-    """Hang the halo off the head bone, the way the game does at load time.
+    """Hang the halo off a bone, the way the game does at load time.
 
-    The halo is usually a prefab of its own with no component tying it to the
-    rig; the game parents it to the head bone once the character is built.
-    Runtime assemblies serialize the follower's target-relative pose. Their
-    saved world pose can be stale (especially on elevated or vehicle rigs).
-    Without a follower, preserve the model prefab's rest placement.
+    The runtime HaloRoot's follower names the bone and the offset from it;
+    its saved world pose can be stale, so it is not used.  Without a
+    follower, the halo goes under the head bone and keeps its rest placement.
     """
     halos = [prefab_halo] if prefab_halo is not None else []
     if prefab_halo is None:
@@ -1768,9 +1763,9 @@ def extract(env, name: str, animations: bool = True, runtime=None, rig: str = ""
     if model.meshes:
         parents = scene.parents()  # before the halo moves to the head
         attach_halo(scene, roots, prefab_halo)
-        # a model with no clips still wears one face, not all of them
         cafe_children = (switch_children(roots, cafe_runtime, prefab_halo)[0]
                          if cafe_runtime is not None else None)
+        # even a model with no clips wears one face, not all of them
         plan_switches(scene, model, *switch_children(roots, runtime, prefab_halo),
                       clips, targets, parents, cafe_children)
     if model.meshes and targets:
@@ -1860,7 +1855,7 @@ def add_renderer(scene: Scene, model: ModelData, obj) -> None:
 # --------------------------------------------------------------------------
 
 COMPONENT_TYPE = {"float32": 5126, "uint32": 5125, "uint16": 5123, "uint8": 5121}
-CHANNEL_KIND = {1: "SCALAR", 3: "VEC3", 4: "VEC4"}  # morph weights, TS, rotation
+CHANNEL_KIND = {1: "SCALAR", 3: "VEC3", 4: "VEC4"}  # weights; translation, scale; rotation
 
 
 class GlbBuilder:
@@ -2114,8 +2109,8 @@ def model_names(bundles: list[str]) -> dict[str, str]:
     `aru_newyear` becomes `Aru (New Year)`. A bundle whose name the map covers
     only up to a suffix carries that suffix as a second parenthesis —
     `ch0334_carrier` is `Arisu (Battle) (Carrier)` — and one the map does not
-    know at all keeps its own name. Commas are kept out of the result: the
-    viewer joins the whole model list into one comma-separated attribute.
+    know at all keeps its own name.  Bundles that land on the same name get
+    their own trailing number appended.
     """
     devnames = read_devname_map()
     names = {}
@@ -2142,8 +2137,8 @@ def runtime_prefabs(bundle_dir: Path, name: str) -> dict[str, object]:
     by rig: `""` for `<name>.prefab`, CAFE_RIG for `<name>_CafeOnly.prefab`.
 
     Their bundles are loaded separately so runtime rigs and cut-in clips do
-    not enter the model export.  Only their halo, the order of their children
-    and their Animator are read.
+    not enter the model export.  Only their halo, their children's order and
+    renderer flags, and their Animator are read.
     """
     files = sorted(bundle_dir.glob(f"character-{name}-_mxload-*.bundle"))
     if not files:
@@ -2210,18 +2205,16 @@ def export(bundle_dir: Path, name: str, out: Path, animations: bool = True,
     resolve_dependencies(env, bundle_dir)
     runtimes = runtime_prefabs(bundle_dir, name)
     runtime = runtimes.get("")
-    # The cafe prefab of a few characters swaps in a body of its own, with its
-    # own Avatar; most only add an event prop to the main body.  Both bodies
-    # share bone paths but not rest frames, and both controllers list the cafe
-    # clips, so a clip goes to the rig it covers more of, ties to the main.
+    # A cafe prefab either drives the main body, in which case the cafe clips'
+    # renderer events count through its children, or swaps in a body with its
+    # own Avatar, which gets a model of its own.  Both controllers list the
+    # cafe clips, so each goes to the rig it covers more of, ties to the main.
     cafe_roots = model_roots(env, name, CAFE_RIG)
     cafe_avatar = runtime_avatar(runtimes.get(CAFE_RIG))
     is_cafe = keep_clip = None
-    # the cafe clips play on the main body through the cafe prefab, whose
-    # children their renderer events count through
     cafe_runtime = runtimes.get(CAFE_RIG)
     if cafe_roots and cafe_avatar not in (None, runtime_avatar(runtime)):
-        cafe_runtime = None  # unless they get a model of their own
+        cafe_runtime = None
         main_targets = animation_targets(model_roots(env, name))
         cafe_targets = animation_targets(cafe_roots)
 

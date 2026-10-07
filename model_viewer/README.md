@@ -2,16 +2,16 @@
 > This submodule of Blue Archive Bot is almost entirely written by AI.
 
 
-# Blue Archive model viewer (PoC)
+# Blue Archive model viewer
 
-`export_models.py` pulls character models out of the game's Unity asset bundles
-and writes one self-contained `.glb` per character into this directory: skinned
-meshes, embedded textures, the bone hierarchy and every animation clip that moves
-the character. `viewer.html` displays them with the
+`export_models.py` reads character models from the game's Unity asset bundles
+and writes one self-contained `.glb` per character into `models/`: skinned
+meshes, embedded textures, the bone hierarchy and the character's animation
+clips. `viewer.html` displays them with the
 [ModelViewer gadget](https://dev.miraheze.org/wiki/Template:ModelViewer/doc).
 
 ```sh
-# what can be exported (~305 bundles, each with the wiki name it is filed under)
+# list exportable bundles, each with the wiki name it is saved under
 python export_models.py --list
 
 python export_models.py airi_original aris_original
@@ -19,24 +19,24 @@ python export_models.py "Aru (New Year)"               # wiki names work too
 python export_models.py --all
 python export_models.py --all --jobs 4
 python export_models.py --overwrite airi_original      # regenerate an existing model
-python export_models.py --overwrite --no-animations airi_original   # bind pose only, ~1/3 the size
+python export_models.py --overwrite --no-animations airi_original   # bind pose only
 
 # the viewer needs HTTP; file:// blocks the fetch of models.json
 python -m http.server 8000   # then open http://localhost:8000/viewer.html
 ```
 
-Existing `.glb` files are skipped unless `--overwrite` is supplied. `--jobs N`
-sets the number of concurrent worker processes; it defaults to
-`max(1, hardware threads - 4)`. Use `--jobs 1` for sequential exports.
+Bundles are read from the Steam build under `vendor/BlueArchive/`; use
+`--bundle-dir` to point elsewhere and `--out` to change the output directory.
+Existing `.glb` files are skipped unless `--overwrite` is given. `--jobs N` sets
+the number of worker processes (default: hardware threads minus 4, at least 1).
 
-Each run updates `models.json`, including skipped models, which `viewer.html` reads to build its model
-dropdown. It maps each file to its mtime, which the viewer appends to the model's
-URL so a re-export is not hidden behind a browser's cached copy of the old one.
-The animation dropdown comes from the clips inside the selected `.glb`, so no
-extra files are needed. Clips are ordered for browsing: `Cafe_Reaction` first,
-then the other shared cafe and formation clips, EX/cutin clips, and the usual
-combat states. Character-specific clips follow alphabetically. The viewer opens
-`Cafe_Reaction` when it is present.
+Each run rewrites `models/models.json` if it changed. It maps every `.glb` in
+the output directory to its mtime. `viewer.html` builds its model list from it
+and appends the mtime to each URL, so the browser does not serve a stale copy.
+The animation list comes from the clips inside the selected `.glb`. Clips are
+sorted with `Cafe_Reaction` first, then the other shared cafe and formation
+clips, EX clips and the common combat states; character-specific clips follow
+alphabetically. The viewer opens `Cafe_Reaction`.
 
 ## Wiki manifest
 
@@ -47,18 +47,18 @@ python -m model_viewer.save_manifest --dry-run
 python -m model_viewer.save_manifest
 ```
 
-The second command saves `Module:ModelViewer/data.json` using the configured
-pywikibot account. The manifest reads `models/models.json` and groups costumes
-and alternate rigs by character. Animations are embedded in each GLB; no
-separate clip manifest is needed. `Module:ModelViewer` itself is maintained on
-the wiki, not in this repository.
+The second command saves `Module:ModelViewer/data.json` with the configured
+pywikibot account, and only if the content changed. The manifest reads
+`models/models.json` and groups models by character: `Aru (New Year).glb` is
+the `New Year` skin of `Aru`. `Module:ModelViewer` itself is maintained on the
+wiki, not in this repository.
 
-GLBs are expected at the root of `lihaohong6/BlueArchiveModels`, served through
-`https://cdn.jsdelivr.net/gh/lihaohong6/BlueArchiveModels@main/`.
-The files must be published there separately. Use `--base URL` to change the
-directory or pin a repository revision instead of using jsDelivr's cached branch.
+GLBs are fetched from the root of `lihaohong6/BlueArchiveModels` through
+`https://cdn.jsdelivr.net/gh/lihaohong6/BlueArchiveModels@main/`. Push them
+there separately. Use `--base URL` to pin a commit instead of the cached
+branch.
 
-With the ModelViewer gadget enabled on the wiki, invoke the module directly:
+On the wiki, invoke the module directly:
 
 ```wikitext
 {{#invoke:ModelViewer|character|Aru}}
@@ -66,302 +66,228 @@ With the ModelViewer gadget enabled on the wiki, invoke the module directly:
 {{#invoke:ModelViewer|all}}
 ```
 
-`character` offers every exported variant, `model` selects one exact export,
-and `all` creates a viewer per character with click-to-load behavior. Viewer
-options such as `height`, `camera`, and `anim-default` can be passed as named
-arguments. The module is adapted from
+`character` offers every model of one character, `model` shows one exact
+model, and `all` creates one click-to-load viewer per character. Gadget options
+such as `height`, `camera` and `anim-default` can be passed as named arguments.
+The module is adapted from
 [Stella Sora's module, revision 34049](https://stellasora.miraheze.org/wiki/Module:ModelViewer?oldid=34049).
 
 ## Export details
 
-**Names.** Bundles are named for the dev's own character codes — `ch0069`,
-`aru_newyear`, `shiroko_ridingsuit` — so each model is written out under the
-wiki's name for that character instead: `Mika.glb`, `Aru (New Year).glb`. The
-lookup is `json/devname_map.json` and `json/devname_map_aux.json`, the tables
-[the wiki repo keeps](https://github.com/electricgoat/bluearchivewiki/blob/master/translation/devname_map.json)
-and `update.py` refreshes, read the same way `utils.dev_name_to_canonical_name`
-reads them for the rest of the bot. A few bundles hold an alternate rig under a
-suffix the tables do not carry — a cut-in, a story scene, a mech — which becomes
-a second parenthesis: `Arisu (Battle) (Carrier).glb`. A bundle in no table keeps
-its own name; of the ones that export, that is `ch0061`, `sm030001` and
-`sm032601`. The bundle name is still what the CLI takes and what the exporter works
-from internally, since it names the prefabs to walk and the prefix to strip off
-clip names; `--list` prints both, and either one can be passed as an argument.
+**Names.** Bundles use the developers' names (`ch0069`, `aru_newyear`,
+`shiroko_ridingsuit`). Each model is saved under the wiki's name instead
+(`Mika.glb`, `Aru (New Year).glb`), looked up in `json/devname_map.json` and
+`json/devname_map_aux.json` (refreshed by `update.py`). Bundles named after a
+model prefab code that the maps lack, such as `ch0061`, are resolved through
+`json/CostumeExcelTable.json`. A suffix the tables do not cover becomes a
+second parenthesis: `ch0334_carrier` is `Arisu (Battle) (Carrier).glb`. Two
+bundles that map to the same name get their trailing number appended. A bundle
+that no table covers (`sm030001`, `ladies_biker_ar`) keeps its own name.
+`--list` prints both names, and the CLI accepts either. Internally the exporter
+works with the bundle name: it names the prefabs to read and the prefix to
+strip from clip names.
 
-**What counts as the character.** A character's bundles carry far more than the
-character: every effect it can spawn ships alongside it, and those prefabs have
-meshes of their own — rocks, sea waves, beams, whole cut-in backdrops, most of
-them textured from bundles nothing here loads. The AssetBundle index sorts the
-two apart, filing the artists' fbx files under `<character>/Model/` and the
-effects under `<character>/Effect/`, but `Model/` still covers props the
-character never wears: Cherino ships 130 breakable wall panels for her cut-in,
-Neru a squadron of drones. So the exporter takes the two prefabs named after the
-bundle — `<name>_Mesh` and, as a fallback, `<name>_Halo` — and walks those hierarchies instead of
-sweeping every renderer in the set. Three characters name the rig something else
-and fall back to the `Model/` prefab with the most skinned renderers, which is
-the body every time. A clip left driving nothing — a camera track, or an
-animation written for a prop rig — is dropped along with the geometry it
-belonged to.
+**What counts as the character.** A character's bundles also carry every
+effect it can spawn, and many `Model/` prefabs are props the character never
+wears (Cherino's breakable walls, Neru's drones). So the exporter reads only
+the prefab `<name>_Mesh` and the halo prefabs (`<name>_Halo`, or another
+`*_Halo` prefab under `Model/`). If there is no `<name>_Mesh`, it takes the
+`Model/` prefab with the most skinned renderers. Inactive GameObjects and
+outline meshes are skipped. A few older characters keep only a loose weapon in
+their own bundles; their full model is read from the preload `_mxprolog`
+bundles.
 
-**Cafe bodies.** Saori (Dress) and Toki sit in the cafe as a separate body,
-`<name>_CafeOnly_Mesh`. It has its own Avatar, and its rest frames differ from
-those of the main rig even where bone paths match. Cafe clips played on the
-main body pull the dress into the legs. These two characters get a second
-model, `<label> (Cafe).glb`, built from the `<name>_CafeOnly` runtime prefab.
-Both runtime controllers list the cafe clips, so they cannot assign them.
-Instead, each clip goes to the rig whose Avatar resolves more of its bindings,
-and ties go to the main body. Niko, Kurumi and Otogi also ship a `_CafeOnly`
-prefab. Theirs drives the main Avatar, so they export as one model. It orders
-its children differently, though, so a cafe clip's renderer events (see
-*Switching parts*) count through the cafe prefab's children; reading them
-against the main prefab's took Niko's gloved hands off in the cafe. Both prefabs
-share one controller, so only the `Cafe_` name marks a cafe clip.
+A clip is kept only if at least half of its transform bindings resolve on the
+character's Avatar. This drops clips for enemies, effects and cut-in props that
+share bone names with the character. EX cut-in clips are kept only when named
+`Exs_Cutin` or `Exs_Cutin_<n>`. A clip whose curves move nothing exported (a
+camera track, for example) is dropped.
 
-**The halo.** The runtime character prefab supplies a `HaloRoot` subtree with
-the intended mesh, material, position and scale. The exporter reads it from
-`character-<name>-_mxload-*` bundles and follows references into other bundles,
-so costumes can reuse their base character's halo without a name mapping.
-Only that subtree is imported from the runtime prefab; its other meshes and
-clips are not exported. When it is available, halo copies in the model FBX
-hierarchies are omitted to avoid duplicates.
+**Cafe bodies.** Saori (Dress) and Toki use a separate cafe body,
+`<name>_CafeOnly_Mesh`, with its own Avatar and rest pose. Cafe clips played on
+the main body distort it, so these characters get a second model,
+`<label> (Cafe).glb`. Both runtime controllers list the cafe clips, so each
+clip goes to the rig whose Avatar resolves more of its bindings; ties go to the
+main body. Niko, Kurumi and Otogi also have a `_CafeOnly` prefab, but it drives
+the main Avatar, so they export as one model. Their cafe prefab orders its
+children differently, so renderer events in `Cafe_` clips (see *Switching
+parts*) are resolved against the cafe prefab's children.
 
-The runtime halo's follower component supplies a `FollowTarget` bone and
-`TargetRelativePosition` / `TargetRelativeRotation`. The exporter attaches the
-halo to that bone with those offsets, rather than preserving a saved world
-position that may be stale. It follows the bone directly; the game's smoothing
-and clamping are not simulated. Without follower settings it attaches to
-`Bip001 Head`, preserving the rest placement. If the runtime prefab has no renderable
-`HaloRoot`, the exporter retains the original model-based discovery: embedded
-halos and `Model/` prefabs with a `_halo` suffix. There are no character-specific
-exceptions.
+**The halo.** The runtime character prefab (`character-<name>-_mxload-*`
+bundles) has a `HaloRoot` subtree with the halo mesh, material and placement.
+The exporter imports only that subtree and follows its references into other
+bundles, so costumes can reuse their base character's halo. When `HaloRoot` is
+present, halo copies in the model prefabs are skipped. The halo's follower
+component gives a `FollowTarget` bone and a `TargetRelativePosition` /
+`TargetRelativeRotation`; the halo is attached to that bone with that offset.
+Without a follower, the halo is attached to `Bip001 Head` and keeps its rest
+placement. Without a renderable `HaloRoot`, the halo objects in the model
+prefabs are used.
 
-**Props the pose does not use.** A rig carries more than the character wears:
-Hoshino's shield exists for the length of her EX, Cherino rides a tank in one
-cut-in, Hanae has a rabbit that hops around for a skill. Each rides along on
-bones of its own, and a clip that does not use them leaves those bones at rest,
-which parks the prop wherever the artist modelled it — inside the character, or
-off beside her. Nothing in the bundles says outright which clip has which prop
-out, but a clip binds every transform of the arrangement it was written for,
-still ones included, so the bindings say it for them: a mesh the default clip
-— `Cafe_Reaction`, or the first clip in the file — binds nothing of is a prop,
-and the clips that do bind it are the clips that have it out.
+**Meshes and the skeleton.** Vertices stay in mesh space, because Unity's
+`m_BindPose` matrices are the inverse bind matrices glTF wants. The Transform
+hierarchy becomes glTF nodes, with one skin per skinned renderer. To convert
+from Unity's left-handed space, the exporter mirrors X, reverses triangle
+winding, negates `y`/`z` of every quaternion and conjugates matrices as
+`FLIP @ M @ FLIP`. `_MainTex` is embedded as PNG; materials without one use
+`_Tint` or `_Color` as a flat colour.
 
-Props are flagged `{"optional": true}` in their node's glTF `extras`, which
-`data-hide-parts="optional"` in `viewer.html` switches off, along with a group
-key the clips that want it back name in their own `extras` as `show`. The
-grouping is there because a prop is rarely one mesh — Hanae's rabbit is a body
-and two eyes on one rig, and a clip that binds the body but holds the eyes still
-would otherwise leave a rabbit with no eyes. A group is the whole subtree the
-prop hangs under, climbing until the next step up would swallow something the
-default clip binds, which stops at the character.
+Rigidly bound meshes (weapons, hand props: every vertex on one bone at full
+weight) have no BlendWeight channel, only BlendIndices. The exporter supplies
+the implied weight of 1.0; otherwise these meshes stay at the bind pose while
+the hand moves. Compressed meshes can return junk in the implied last weight
+slot; the exporter replaces it with the remaining weight. glTF allows four
+influences per vertex, so wider vertices keep their four heaviest.
 
-A mesh the rig does not carry at all is judged differently. A handful hang
-straight off the model root with no bone above them, so nothing takes them along
-and they are placed by their own curves or not at all; a clip that binds one
-only to hold it still says nothing about it, and those go by which clips drive
-them instead. What separates Yoshimi's amplifier from a rifle parked in the air
-beside the character is that set dressing is modelled standing on the floor, so
-a prop resting on `y = 0` stays and one floating clear of it does not. This
-branch used to catch most weapons, until the rigid binds below were read
-properly; now that the rig carries them, almost nothing reaches it. (The halo is
-left out of all of this; it gets hung off the head bone instead, above.) 19 of
-the 283 models have something to hide, 24 meshes between them, and all but three
-of those props come back for some clip.
+**Transparency.** `_MainTex` alpha is not always opacity.
+`MX/C-General/Layer4`, the usual body shader, stores a layer selector there,
+and the weapon and halo shaders store other data. So the exporter reads the
+shader's first pass. Most passes write `Blend [_SrcBlend] [_DstBlend]`, which
+serialises as 0/0, so the material's `_SrcBlend`/`_DstBlend`/`_ZWrite` decide.
 
-**Meshes and the skeleton.** Vertices are left in mesh space, because Unity's
-`m_BindPose` matrices are exactly the inverse bind matrices glTF wants: the
-exporter mirrors the Transform hierarchy into glTF nodes, emits one skin per
-skinned renderer, and lets the viewer do the skinning. Coordinates leave Unity's
-left-handed space by mirroring X, which also means reversing triangle winding,
-negating `y`/`z` of every quaternion, and conjugating matrices as `FLIP @ M @ FLIP`.
-`_MainTex` is embedded as PNG; materials without one fall back to `_Tint`.
+- SrcAlpha / OneMinusSrcAlpha with depth write (eyes, mouth): `MASK`.
+- SrcAlpha / OneMinusSrcAlpha without depth write: `BLEND`.
+- `_AlphaClip` set: `MASK` at `_Cutoff`.
+- Other blending with `RenderType` `Transparent`: `BLEND`.
+- Everything else: `OPAQUE`.
 
-A rigidly bound mesh — every vertex on one bone, at full weight — is the case
-to watch. Unity drops the BlendWeight channel from those meshes entirely and
-ships only BlendIndices, so `MeshHandler.m_BoneWeights` comes back empty while
-`m_BoneIndices` is full. Weapons and hand props are built this way, and reading
-the missing channel as "not skinned" strands them wherever the bind pose left
-them while the bones that should carry them animate on without them. The
-exporter synthesises the implied weight of 1.0 instead.
+**Bundles outside the character's own set.** Materials, textures and the mouth
+atlas often live in other bundles: another character's, the shared shaders, or
+the preload group. Bundles name dependencies by serialized file, not by bundle.
+So, the first time a pointer leaves the loaded bundles, the exporter reads the
+header of every bundle (main and preload directories) to map file to bundle,
+then loads the needed bundle as a dependency. Dependencies do not add their own
+prefabs or clips to the export.
 
-**Transparency.** An alpha channel is not always an opacity. `MX/C-General/Layer4`,
-the shader most bodies are painted with, keeps a layer selector in the alpha of
-`_MainTex` — Kayoko (New Year)'s body texture is alpha 0 from corner to corner —
-and `MX/C-Weapon` and the halo shader each keep something of their own there.
-Read as transparency, those erase the character. So the exporter asks the shader
-instead: the alpha is an opacity only where the first pass actually blends on it,
-source factor SrcAlpha over OneMinusSrcAlpha. BA's shaders mostly write
-`Blend [_SrcBlend] [_DstBlend]`, which serializes as 0/0 in the pass, so the
-material's own `_SrcBlend`/`_DstBlend`/`_ZWrite` floats are the ground truth
-there. A blending pass that still writes depth — the eyes and mouth, drawn over
-the face — becomes glTF's `MASK`, which is the closest it has; `_AlphaClip` asks
-for a cutout outright. Everything else is `OPAQUE`.
+**Faces.** The face texture has eyes but no mouth. The mouth is a quad whose
+UVs sit in a small corner window; the shader maps that window to one tile of an
+expression atlas named by the material's `_MouthTileTex`. Most characters share
+`Character_Mouth`, an 8x8 grid; a few have their own atlas and grid
+(`_MouthTileCols`, `_MouthTileRows`). The exporter finds the quad by its UV
+window, crops the tiles it needs and gives the quad its own primitive and
+material. The quad is either part of the eye submesh or a submesh of its own.
 
-**Bundles outside the character's own set.** Characters are not self-contained:
-a material, a `_MainTex`, or the atlas the mouth samples often lives elsewhere —
-another character's bundles, the shared shader set, the preload group — and
-UnityPy can only follow a pointer into a file it has been handed. Bundles name
-their dependencies by serialized file rather than by bundle, so the exporter
-reads the node table out of the header of every bundle shipped (a few KiB each;
-26k bundles in about five seconds) to learn which bundle holds which file, and
-opens one the moment a pointer needs it. The index is built once per process and
-only if something actually reaches outside. Those bundles are loaded as
-dependencies, so borrowing another character's texture does not also drag in
-their body.
+The default tile is `uv * scale + offset` read back from `_MouthTileTex`. An
+offset past 1 wraps around (Ui's 1.625 is column 5 of 8, not 13), and a
+negative scale mirrors the axis, which puts the offset on the far edge of the
+tile, so the tile is one cell back.
 
-**Faces.** A character's own face texture has eyes but no mouth: the mouth is a
-quad sharing the eye submesh whose UVs sit in a blank corner, which the toon
-shader redirects into one tile of an expression atlas. Most characters share
-`Character_Mouth`, a 1024x1024 grid of 64 expressions out of the preload set; a
-few carry an atlas of their own, and not always on the same grid. The material's
-`_MouthTileTex` names it and the resolution above reaches it, wherever it lives;
-the exporter crops out the tiles it needs and gives the mouth quad its own
-primitive and material. Without that the mouth is an opaque white patch. Which
-tile the material is saved with is `uv * scale + offset` read back, and neither
-term is tidy: an offset past 1 counts the tile off from a second copy of the
-atlas, which the sampler wraps away — Ui's 1.625 is column 5, not column 13 —
-and a negative scale mirrors the axis, which puts the offset on the tile's far
-edge and the tile itself one cell back. Read literally, either one lands outside
-the grid or on the neighbouring mouth. Some characters hang their eyes off a
-second renderer, which leaves the mouth as a whole submesh rather than a corner
-of the eye submesh; both shapes are found by the UV window that maps onto the
-tile.
+**Expressions.** Clips change the mouth with `AnimationEvent`s:
+`SetMouthTile(row * 100 + col)`, with rows counted from the bottom of the atlas,
+or `SetMouthTileToDefault()` for the material's own tile. glTF cannot animate a
+UV offset. So the exporter crops every tile the clips use and gives each one its
+own copy of the mouth quad. Each copy has one morph target that collapses it to
+a point. A clip shows a tile by holding that copy's weight at 0 and all the
+others at 1, with `STEP` interpolation. The copies keep their skinning, because
+some characters rig the mouth to its own `bone_mouth`.
 
-**Expressions.** The mouth is not a curve but an event track: each clip carries
-Unity `AnimationEvent`s calling `SetMouthTile(row * 100 + col)` at the times the
-expression should change, with the row counted from the bottom of the atlas
-(Unity's UV origin), or `SetMouthTileToDefault()` for whichever tile the
-material itself is saved with. A quarter of the clips change the mouth while
-they play. glTF cannot animate a UV offset, so the exporter crops every tile a
-character's clips ask for, gives each one its own copy of the mouth quad, and
-switches between them with morph weights: each copy carries a single morph
-target that folds it to a point, so a clip shows an expression by holding that
-copy's weight at 0 and every other copy's at 1. The keys are `STEP`
-interpolated, so the switch is exact rather than a fade, and the copies keep
-their skinning — some characters rig the mouth partly to a `bone_mouth` of its
-own, which a plain unskinned quad would lose. A model typically needs 4 to 16
-copies of a 25-vertex quad, which costs a few tens of KiB.
+**Spare faces.** Some characters have extra face meshes for brief expressions
+(Kasumi's star eyes, Aoba's blank stare, Neru's joke glasses). They ship enabled
+beside the everyday face, and the clips switch them. A face mesh is one that
+uses a `*_Face` material and no `*_Body` or `*_Hair` material. The everyday face
+is the one with the `*_EyeMouth` material, since the clips lip-sync that mouth;
+otherwise the one whose name has no number after "face". When a character has
+two or more faces, each gets the collapsing morph target, and every face except
+the worn one is held at weight 1. The worn face is the one a clip leaves on by
+itself. If that reading of `Cafe_Reaction` does not give the everyday face,
+the renderer events are ignored for that character and only the curves are
+used. A single face mesh is switched like any other part (Tsukuyo's closed-eye
+face).
 
-**Spare faces.** An expression a character only pulls for a moment — Kasumi's
-star-struck eyes, Aoba's blank stare, Neru's joke glasses and moustache — is not
-a texture swap but a mesh of its own, sitting in the same place as the everyday
-face and shipped switched on beside it. The game hides all but one at load; a
-straight export leaves them stacked, which reads as two sets of eyes through one
-another. Twenty-two of the bundles have more than one face, and what the mesh is
-called is no guide to which is which, so they are found by material: a face
-paints itself with the character's `_Face` material and nothing else of her,
-whereas the body showing through it brings its own skin and hair along. Of those,
-the everyday one is the one carrying the `_EyeMouth` material, since the mouth the
-clips lip-sync belongs to the face the character talks with; a face kept for a
-single line has its mouth painted on. Each face gets the mouth quad's treatment —
-one morph target folding it to a point — and every face but the one being worn is
-held at weight 1. A face mesh with no other face beside it is switched like any
-other part (below): Tsukuyo's eyes and mouth live on her body mesh, and her one
-face mesh is a closed-eye shell that every clip keeps off through its renderer's
-`enabled` flag, except for closed-eye moments in her EX and one victory pose.
+**Switching parts.** Clips also switch other parts: Toki's two bodies, the
+body swaps of Hoshino (Swimsuit) and Arisu (Battle), Megu's weapon in the cafe,
+Makoto's spare hairdo. A clip switches an object in one of two ways:
 
-**Switching parts.** Faces are not the only thing a clip switches: Toki trades
-one body for another between her two forms, Hoshino (Swimsuit) and Arisu (Battle)
-swap between body meshes, Megu puts her weapon away in the cafe, and Makoto keeps
-a spare hairdo that is never meant to show. A clip switches an object in one of
-two ways. It either animates a flag directly — the GameObject's active flag, a
-generic binding with `attribute` 2086281974 (`crc32("m_IsActive")`), or its
-renderer's `enabled` flag, `typeID` 25 with `attribute` 3305885265
-(`crc32("m_Enabled")`) — which names its target by path like any other binding
-and so is never in doubt, or it fires
-`AniEvt_EnableChildRenderer(i)` / `AniEvt_DisableChildRenderer(i)`, which flip the
-`enabled` flag of the renderer on the `i`th child of the character's root. That
-root is not the model FBX's but the runtime prefab's — the
-`character-<name>-_mxload-*` bundle, container path
-`assets/_mx/addressableasset/character/<name>/<name>.prefab` — which the game
-instantiates in its place. It lists the same children in a different order,
-renderers first and then bones and halo, so the exporter walks the runtime prefab's
-children and matches each back by name to the object it exported. A child with
-no renderer of its own, such as `HaloRoot` or `bone_root`, gives the event
-nothing to flip, so the event does nothing. Reading the
-index against the FBX's own children lands on the wrong object for some
-characters; Makoto's hairdo, left showing as a grey lump behind her head, was the
-visible case. The runtime prefab also saves each renderer's starting `enabled`
-flag, and a few start off: Toki's second body, Kisaki's weapon and cutin table,
-Yuzu (Battle)'s prop, and some spare faces.
+- A curve on the GameObject's active flag (`attribute` 2086281974,
+  `crc32("m_IsActive")`) or the renderer's `enabled` flag (renderer `typeID`,
+  `attribute` 3305885265, `crc32("m_Enabled")`). The binding names its target by
+  path.
+- An `AniEvt_EnableChildRenderer(i)` / `AniEvt_DisableChildRenderer(i)` event.
+  It flips the renderer of the `i`th child of the runtime prefab root
+  (`assets/_mx/addressableasset/character/<name>/<name>.prefab`), not the model
+  prefab. The runtime prefab orders its children differently, so the exporter
+  matches each child back by name. Children with no renderer (`HaloRoot`,
+  `bone_root`) make the event do nothing.
 
-Each switched object gets the mouth quad's fold on every mesh beneath it. A
-skinned vertex still follows its own bones once folded, so the fold tears into
-shards as the pose leaves the bind pose, more so the more bones a mesh spans:
-Niko's spare hands and Tsukuyo's tree costume showed as shards and slabs. So a
-clip that keeps an object off throughout also names it under `hide` in the
-clip's glTF `extras`, and the viewer hides it outright. The name is a made-up
-`switch<n>` key that the object's mesh nodes carry in their own `extras`. A
-switch whose nodes also carry meshes it does not switch gets no key, since
-hiding a node hides its subtree. The fold stays for switches partway through a
-clip and for viewers that ignore `extras`.
+The runtime prefab also stores each renderer's starting `enabled` flag; a few
+start off (Toki's second body, Kisaki's weapon and table, Yuzu (Battle)'s
+prop). An object's rest state is its state at the start of `Cafe_Reaction`,
+starting from that flag. Every mesh under a switched object gets the collapsing
+morph target. Each clip has a `STEP` weight channel for it only where its state
+differs from rest.
 
-A switched object's rest
-weight is its state at the start of the idle clip, starting from the runtime
-prefab's flag, and a clip carries a `STEP` weight channel only where it differs
-from that. A clip that switches off every skinned mesh except the faces and mouth,
-making the whole character vanish, is left at rest instead. Izuna's and Haruka (New
-Year)'s EX clips do this. The fold cannot hide her completely: a skinned vertex
-pulled to the centre still follows its own bones, so the body smears into a sheet,
-and the halo stays up. Faces are settled as a set, one worn at a time: every face ships
-switched on and the clips switch the spare ones off, so the face worn at a given
-moment is whichever one a clip leaves on by itself. As a guard, if reading the idle
-clip that way does not put the character in her everyday face, her events are
-dropped and only the active-flag curves are kept; no character trips it today.
-Objects the runtime prefab stores as inactive GameObjects, such as Hoshino's
-shield, are left to the prop handling above.
+A collapsed skinned mesh still follows its bones, so it tears into shards when
+the pose moves away from the bind pose. So a clip that keeps an object off for
+its whole length also lists it under `hide` in the clip's glTF `extras`, and the
+viewer hides it. The key is `switch<n>`, which the object's mesh nodes carry in
+their `extras`. A switch whose subtree contains meshes it does not switch gets no
+key, because hiding a node hides its subtree.
 
-**Animations.** The clips are Mecanim, not legacy, so there are no
-`m_RotationCurves` to read — every float curve is packed into
-`m_MuscleClip.m_Clip` as three concatenated arrays (sparsely keyed *streamed*,
-evenly sampled *dense*, and *constant*), and `m_ClipBindingConstant` says which
-transform property each run of curves belongs to. `export_models.py` decodes the
-streamed byte stream itself, since UnityPy has no helper for it, and resolves the
-binding path hashes to bones through the Avatar's `m_TOS` table. Curves become
-glTF samplers at their native key times. Each streamed key carries the cubic
-Unity follows until the next key, so those channels are written as
-`CUBICSPLINE`, with the cubic's slopes as tangents, and play back exactly as
-in-game. Linear interpolation of the key values alone made dangling chains —
-tails, hair, straps — visibly twitch. A cubic can jump at a key, which glTF
-cannot, so a jump gets a second key one float step later. Dense curves and
-channels with only straight segments stay `LINEAR`. A rotation is keyed either as a
-quaternion (binding attribute 2) or as Euler angles in degrees (attribute 4);
-about forty bundles key some clips the second way — Natsu (Band)'s cafe and
-cut-in clips among them. The binding's `customType` is the rotation order, as
-Unity's `RotationOrder` enum: 0 (X, then Y, then Z) for curves kept as the FBX
-had them, 4 (Unity's own Z-X-Y) for the rest. Reading every clip as Z-X-Y
-twists the 3ds Max rigs out of shape. Extra keys go in wherever an angle moves
-more than 10° between keys, so glTF's interpolation between quaternions stays
-close to Unity's per-angle one.
+A clip that at some point switches off every skinned mesh except faces and
+mouth makes the whole character vanish (Izuna's and Haruka (New Year)'s EX).
+Collapsing cannot do that cleanly, so such clips keep every switch at rest.
+Objects the runtime prefab stores as inactive GameObjects (Hoshino's shield)
+are left to prop detection below.
+
+**Props the pose does not use.** A rig carries props the character holds only
+in some clips: Hoshino's shield in her EX, Cherino's tank in one cut-in, Hanae's
+rabbit. A clip that does not use a prop leaves its bones at rest, which puts the
+prop wherever it was modelled. A clip binds every transform of the arrangement
+it was written for, including still ones. So a mesh on the rig that the default
+clip (`Cafe_Reaction`, else the first clip) binds nothing of is a prop, and the
+clips that bind it are the clips that show it.
+
+Props get `{"optional": true, "prop<n>": true}` in their node's `extras`.
+`data-hide-parts="optional"` hides them, and a clip that uses a prop lists its
+`prop<n>` group under `show` in its own `extras`. A group is the whole subtree
+the prop hangs under, climbing until the next parent would include something
+the default clip binds. Props that share nodes share a group, so a multi-mesh
+prop (Hanae's rabbit and its eyes) comes and goes together.
+
+A few meshes hang off the model root with no bone above them. For these, a
+binding that only holds the mesh still means nothing, so the exporter uses the
+clips that actually animate it. Such a mesh that rests on the floor (`y = 0`,
+within 0.02) counts as set dressing and is never a prop (Yoshimi's amplifier).
+The halo is never a prop.
+
+**Animations.** The clips are Mecanim. Curves are packed in
+`m_MuscleClip.m_Clip` as three concatenated arrays: streamed (sparse keys),
+dense (evenly sampled) and constant. `m_ClipBindingConstant` says which
+property each run of curves belongs to. The exporter decodes the streamed data
+itself, since UnityPy has no helper, and resolves binding path hashes to bones
+through the Avatar's `m_TOS` table.
+
+Each streamed key stores the cubic the curve follows until the next key. Those
+channels are written as `CUBICSPLINE` with the cubic's slopes as tangents, so
+they play back exactly; linear keys made tails, hair and straps twitch. A cubic
+can jump at a key, which glTF cannot, so a jump gets a second key one float step
+later. Dense curves and channels with only straight segments are `LINEAR`.
+
+A rotation is keyed as a quaternion (binding attribute 2) or as Euler angles in
+degrees (attribute 4). For Euler bindings, `customType` is Unity's
+`RotationOrder`: 0 (XYZ) for curves kept from the FBX, 4 (ZXY) for Unity's
+own. The 3ds Max rigs break if every clip is read as ZXY. Euler curves are
+sampled to quaternions, with extra keys wherever an angle moves more than 10°
+between keys.
 
 ## Known gaps
 
-- Euler-keyed rotations are sampled to `LINEAR` quaternion keys rather than
-  carried as cubics.
-- Channels that hold still at the node's rest transform are dropped — three.js
-  restores unbound nodes to their rest value, and keeping them roughly tripled
-  file size. A viewer that does not restore rest state would need them back.
-- Clip names keep the game's own naming (`Formation_Idle`, `Exs`, `Vital_Death`);
-  only the character prefix is stripped.
-- Expressions follow the clip's own event track. During voiced lines the game
-  overrides it with a separate lipsync layer driven by the voice data, which is
-  not in the model bundles, so what is exported is what you see in unvoiced
-  contexts such as the lobby and in battle.
+- Euler-keyed rotations become `LINEAR` quaternion keys, not cubics.
+- Channels that hold still at the node's rest transform are dropped; keeping
+  them roughly triples the file size. The viewer restores unbound nodes to rest; a
+  viewer that does not would need them.
+- Clip names keep the game's naming (`Formation_Idle`, `Exs`, `Vital_Death`);
+  only the character prefix is removed.
+- Expressions follow each clip's event track. During voiced lines the game
+  uses a lipsync layer driven by voice data, which is not in the model bundles.
 - Apart from the mouth atlas, only `_MainTex` is used. The game's toon shader
-  also relies on mask and specular textures, so shading is flat;
-  `data-shading="unlit"` in the viewer is the closest cheap approximation.
-- The halo is attached rigidly, so it takes the head's rotation as well as its
-  position. The game's walking modes — the cafe and the world raid map — run
-  the halo through a follower that damps both, so it lags the head a little
-  there; a follower is a per-frame simulation, which a glTF clip cannot hold.
-- Outline (`OL_`) meshes are dropped; the gadget's own `outline` option can stand
-  in for them.
-- Which prop belongs in which clip is read off the clips' bindings and, for the
-  props the rig does not carry, off whether they rest on the floor. Both are
-  inferences, not statements the files make: a prop the artist parked at ground
-  level is kept whatever the clip does with it.
-- Props the game spawns on rigs of their own go with the effects: Shiroko
-  Terror's pufferfish, Cherino's capybara, Utaha's robots. They stand beside the
-  character rather than being part of it, and their clips leave with them.
-- Compressed meshes hand back a junk value in the bone-weight slot Unity implies
-  rather than stores; the exporter refills it with the leftover weight.
+  also uses mask and specular textures, so shading is flat;
+  `data-shading="unlit"` is the closest cheap match.
+- The halo is attached rigidly to its bone. In the cafe and the world raid map,
+  the game damps the halo so it lags the head; glTF cannot express that.
+- Outline (`OL_`) meshes are dropped; the gadget's `outline` option replaces
+  them.
+- Prop detection is inferred from clip bindings and, for meshes with no bone,
+  from floor contact. A prop modelled at floor level is always kept.
+- Props the game spawns on separate rigs (Shiroko＊Terror's pufferfish,
+  Cherino's capybara, Utaha's robots) are effects and are not exported.
