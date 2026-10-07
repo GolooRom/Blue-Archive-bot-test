@@ -124,6 +124,25 @@ Without a follower, the halo is attached to `Bip001 Head` and keeps its rest
 placement. Without a renderable `HaloRoot`, the halo objects in the model
 prefabs are used.
 
+**Parts only the runtime prefab has.** The runtime prefab adds a few top-level
+parts that the model prefab lacks: Ibuki's second face, Koharu's and Takane's
+weapons, Momoi's and Midori's gamepad, Hanae (Christmas)'s sack. It draws them
+with `OL_` meshes. An `OL_` mesh has the same vertices, UVs, bones and triangles
+as its original, with the outline normals in the tangents. The exporter imports
+these meshes without the `OL_` prefix, together with their transforms and
+bones from the runtime prefab. Where a runtime path also exists in the model
+prefab, the model prefab's node stands in for it. Clips bind the new transforms
+by path hash (`crc32` of the path below the root), so their curves are kept
+(the gamepad's `Bone_GamePad`).
+
+A runtime part whose bounds match an exported part's within 1% of its size,
+where the exported part's name is absent from the runtime prefab, is a renamed
+copy (Nodoka (Hot Spring)'s body) or a remade copy (Yuzu (Battle)'s cockpit).
+It is not imported; renderer events that name it switch the exported part.
+
+Inactive runtime parts are skipped. Parts that only the model prefab has (the
+drone of Shiroko's EX) are kept.
+
 **Meshes and the skeleton.** Vertices stay in mesh space, because Unity's
 `m_BindPose` matrices are the inverse bind matrices glTF wants. The Transform
 hierarchy becomes glTF nodes, with one skin per skinned renderer. To convert
@@ -285,8 +304,9 @@ between keys.
   `data-shading="unlit"` is the closest cheap match.
 - The halo is attached rigidly to its bone. In the cafe and the world raid map,
   the game damps the halo so it lags the head; glTF cannot express that.
-- Outline (`OL_`) meshes are dropped; the gadget's `outline` option replaces
-  them.
+- Outlines are not exported; the gadget's `outline` option replaces them. Parts
+  the model prefab has are exported from their original meshes, not their
+  `OL_` copies.
 - Prop detection is inferred from clip bindings and, for meshes with no bone,
   from floor contact. A prop modelled at floor level is always kept.
 - Props the game spawns on separate rigs (Shiroko＊Terror's pufferfish,

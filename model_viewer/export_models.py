@@ -22,6 +22,7 @@ import json
 import os
 import re
 import struct
+import zlib
 from collections import Counter, defaultdict
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import dataclass, field
@@ -238,6 +239,8 @@ class Scene:
         self.nodes: list[dict] = []
         self.roots: list[int] = []
         self._index: dict[tuple[str, int], int] = {}
+        # the model prefab's transforms for the runtime prefab's; see runtime_parts()
+        self.stand_ins: dict[tuple[str, int], object] = {}
 
     def add(self, node: dict) -> int:
         """Add a root node of our own making, for a mesh with no transform."""
@@ -278,6 +281,7 @@ class Scene:
 
     def node(self, transform) -> int:
         """Index of the glTF node for this transform, creating it if needed."""
+        transform = self.stand_ins.get(obj_key(transform), transform)
         key = obj_key(transform)
         if key in self._index:
             return self._index[key]
@@ -680,7 +684,8 @@ def mouth_events(clips) -> dict[tuple[str, int], list[tuple[float, int | None]]]
     return tracks
 
 
-def switch_children(roots, runtime, prefab_halo=None) -> tuple[list, set]:
+def switch_children(roots, runtime, prefab_halo=None,
+                    counterparts: dict | None = None) -> tuple[list, set]:
     """The objects an AniEvt renderer event counts through, in its order, and
     the keys of those whose renderer starts switched off.
 
@@ -692,7 +697,7 @@ def switch_children(roots, runtime, prefab_halo=None) -> tuple[list, set]:
     and `bone_root` do not.  The events flip the renderer's enabled flag,
     which the runtime prefab sets off for a few spare bodies and props the
     FBX has on.  Without a runtime prefab, the model root's own children are
-    the best guess.
+    the best guess.  For `counterparts`, see runtime_parts().
     """
     if not roots:
         return [], set()
@@ -702,6 +707,7 @@ def switch_children(roots, runtime, prefab_halo=None) -> tuple[list, set]:
     by_name = {child.m_GameObject.read().m_Name: child for child in own}
     if prefab_halo is not None:
         by_name.setdefault(prefab_halo.m_GameObject.read().m_Name, prefab_halo)
+    by_name |= counterparts or {}
     children, off = [], set()
     for child in runtime.m_Children:
         game_object = child.read().m_GameObject.read()
@@ -711,6 +717,91 @@ def switch_children(roots, runtime, prefab_halo=None) -> tuple[list, set]:
         if children[-1] is not None and not all(r.m_Enabled for r in renderers):
             off.add(obj_key(children[-1]))
     return children, off
+
+
+# how closely a runtime part's bounds must match a model part's, relative to its size
+REMADE_PART_TOLERANCE = 0.01
+
+
+def mesh_positions(renderer, obj_type: str, game_object) -> np.ndarray | None:
+    """A renderer's vertices, in glTF space as MeshData keeps them."""
+    mesh = mesh_of(renderer, obj_type, game_object)
+    if mesh is None:
+        return None
+    handler = MeshHandler(mesh)
+    handler.process()
+    if not handler.m_Vertices or not handler.m_VertexCount:
+        return None
+    return np.array(handler.m_Vertices)[:, :3] * UNITY_TO_GLTF
+
+
+def same_bounds(a: np.ndarray, b: np.ndarray) -> bool:
+    low, high = b.min(axis=0), b.max(axis=0)
+    tolerance = REMADE_PART_TOLERANCE * np.linalg.norm(high - low)
+    return (np.allclose(a.min(axis=0), low, atol=tolerance)
+            and np.allclose(a.max(axis=0), high, atol=tolerance))
+
+
+def runtime_parts(scene: Scene, model: ModelData, roots, runtime) -> tuple[dict, dict]:
+    """Add the runtime prefab's own parts, which the model prefab lacks.
+
+    A part whose bounds match a model part absent from the runtime prefab is
+    a copy of it and is skipped.  Returns {runtime child name: the transform
+    its renderer events mean} for switch_children(), and {path hash:
+    transform} for the new transforms the clips animate.
+    """
+    if runtime is None or not roots:
+        return {}, {}
+    own = {child.read().m_GameObject.read().m_Name for child in roots[0].m_Children}
+    model_paths: dict[str, object] = {}
+    transform_paths(roots[0], "", model_paths)
+    by_name = {path.rsplit("/", 1)[-1]: transform for path, transform in model_paths.items()}
+    runtime_paths: dict[str, object] = {}
+    transform_paths(runtime, "", runtime_paths)
+    runtime_names = {path.rsplit("/", 1)[-1] for path in runtime_paths}
+    exported = [(scene.nodes[data.owner]["name"], data.positions) for data in model.meshes
+                if data.owner is not None]
+
+    counterparts, added = {}, []
+    for child in runtime.m_Children:
+        child = child.read()
+        game_object = child.m_GameObject.read()
+        name = game_object.m_Name
+        if name in own or is_halo(name) or not game_object.m_IsActive:
+            continue
+        renderers = [pair.component for pair in game_object.m_Component
+                     if pair.component.type.name in ("SkinnedMeshRenderer", "MeshRenderer")]
+        positions = [mesh_positions(obj.read(), obj.type.name, game_object) for obj in renderers]
+        positions = [p for p in positions if p is not None]
+        if not positions:
+            continue  # Asuna's Box001 has no mesh
+        match = next((owner for owner, vertices in exported if owner not in runtime_names
+                      and any(same_bounds(p, vertices) for p in positions)), None)
+        if match is not None:
+            counterparts[name] = by_name.get(match)
+        else:
+            counterparts[name] = child
+            added.append((child, renderers))
+
+    for path, transform in runtime_paths.items():
+        if path in model_paths:
+            scene.stand_ins[obj_key(transform)] = model_paths[path]
+    path_of = {obj_key(transform): path for path, transform in runtime_paths.items()}
+    animated = set()
+    for child, renderers in added:
+        name = child.m_GameObject.read().m_Name
+        subtree: dict[str, object] = {}
+        transform_paths(child, name, subtree)
+        animated |= subtree.keys()
+        for obj in renderers:
+            add_renderer(scene, model, obj, outline_mesh=True)
+            for bone in getattr(obj.read(), "m_Bones", None) or []:
+                path = path_of.get(obj_key(bone.read())) if bone.path_id else None
+                while path and path not in model_paths:
+                    animated.add(path)
+                    path = path.rpartition("/")[0]
+    # Mecanim names a transform by the CRC-32 of its path
+    return counterparts, {zlib.crc32(path.encode()): runtime_paths[path] for path in animated}
 
 
 def visibility_tracks(clips, children_of, targets: dict[int, object]) -> tuple[dict, dict]:
@@ -1759,6 +1850,9 @@ def extract(env, name: str, animations: bool = True, runtime=None, rig: str = ""
         except Exception as e:
             # skip renderers pointing into bundles we did not load
             print(f"  skipped a renderer: {type(e).__name__}: {e}")
+    counterparts, runtime_targets = runtime_parts(scene, model, roots, runtime)
+    if targets:
+        targets |= runtime_targets
 
     if model.meshes:
         parents = scene.parents()  # before the halo moves to the head
@@ -1766,7 +1860,7 @@ def extract(env, name: str, animations: bool = True, runtime=None, rig: str = ""
         cafe_children = (switch_children(roots, cafe_runtime, prefab_halo)[0]
                          if cafe_runtime is not None else None)
         # even a model with no clips wears one face, not all of them
-        plan_switches(scene, model, *switch_children(roots, runtime, prefab_halo),
+        plan_switches(scene, model, *switch_children(roots, runtime, prefab_halo, counterparts),
                       clips, targets, parents, cafe_children)
     if model.meshes and targets:
         add_clips(scene, model, clips, targets)
@@ -1777,11 +1871,11 @@ def extract(env, name: str, animations: bool = True, runtime=None, rig: str = ""
     return scene, model
 
 
-def add_renderer(scene: Scene, model: ModelData, obj) -> None:
+def add_renderer(scene: Scene, model: ModelData, obj, outline_mesh: bool = False) -> None:
     renderer = obj.read()
     game_object = renderer.m_GameObject.read()
     mesh = mesh_of(renderer, obj.type.name, game_object)
-    if mesh is None or mesh.m_Name.startswith("OL_"):
+    if mesh is None or (mesh.m_Name.startswith("OL_") and not outline_mesh):
         return  # OL_ meshes are the inverted-hull outline duplicates
     if obj_key(mesh) in model.seen_meshes:
         return  # the same mesh is sometimes referenced from several bundles
@@ -1838,7 +1932,8 @@ def add_renderer(scene: Scene, model: ModelData, obj) -> None:
                     primitives, found)
         model.mouth_owner = obj_key(transform) if transform is not None else None
     if primitives:
-        model.meshes.append(MeshData(mesh.m_Name, verts, normals, uvs, joints, weights,
+        model.meshes.append(MeshData(mesh.m_Name.removeprefix("OL_") if outline_mesh else mesh.m_Name,
+                                     verts, normals, uvs, joints, weights,
                                      primitives, skin_index, parent, owner=owner))
         names = [name.lower() for _, name in primitives]
         painted = (any(name.endswith(FACE_MATERIAL) for name in names)
