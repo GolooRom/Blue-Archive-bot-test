@@ -202,6 +202,11 @@ and gives each one its own copy of the mouth quad. Each copy has one morph
 target that collapses it to a point. A clip shows a tile by holding that copy's
 weight at 0 and all the others at 1, with `STEP` interpolation. The copies keep
 their skinning, because some characters rig the mouth to its own `bone_mouth`.
+A character can have more than one mouth: Shigure (Hot Spring) has one on her
+body and one on her cut-in body, and Tsukuyo's tree has its own (driven
+through `CharacterMultiMouthEventReceiver`). Each mouth gets its own set of
+copies (`Mouth_*`, `Mouth2_*`, ...), and every set follows the same event
+track. A set is folded away while the mesh it came off is hidden.
 
 **Spare faces.** Some characters have extra face meshes for brief expressions
 (Kasumi's star eyes, Aoba's blank stare, Neru's joke glasses). They ship enabled

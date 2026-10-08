@@ -933,7 +933,7 @@ def plan_switches(scene: Scene, model: ModelData, children: list, off: set, clip
     nodes = {obj_key(t): scene.find(t) for t in [*children, *(cafe_children or []),
                                                  *targets.values()]
              if t is not None and obj_key(t) in tracks}
-    mouth = scene.find_key(model.mouth_owner)
+    owners = [(mouth, scene.find_key(mouth.owner)) for mouth in model.mouths]
     carried = {}
     for key, by_clip in tracks.items():
         if key in model.face_nodes or nodes.get(key) is None:
@@ -945,9 +945,12 @@ def plan_switches(scene: Scene, model: ModelData, children: list, off: set, clip
         meshes = [data for data in model.meshes
                   if data.owner is not None and data.morph is None
                   and nodes[key] in chain(data.owner, parents)]
-        if mouth is not None and nodes[key] in chain(mouth, parents):
-            model.mouth_switch = key
-        if not meshes and model.mouth_switch != key:
+        carries_mouth = False
+        for mouth, owner in owners:
+            if owner is not None and nodes[key] in chain(owner, parents):
+                mouth.switch = key
+                carries_mouth = True
+        if not meshes and not carries_mouth:
             continue
         model.switch_tracks[key] = by_clip
         model.switch_rest[key] = rest
@@ -957,7 +960,7 @@ def plan_switches(scene: Scene, model: ModelData, children: list, off: set, clip
             scene.nodes[node]["weights"] = [0.0 if rest else 1.0]
 
     faces = {id(model.meshes[index]) for index in model.face_meshes.values()}
-    mouths = set(model.mouth_nodes.values())
+    mouths = {node for mouth in model.mouths for node in mouth.nodes.values()}
     skinned = {id(data) for data in model.meshes
                if data.skin is not None and id(data) not in faces and data.node not in mouths}
     for clip_key in {clip for by_clip in model.switch_tracks.values() for clip in by_clip}:
@@ -1093,37 +1096,39 @@ def mouth_channels(model: ModelData, clip) -> list[Channel]:
     """Morph weights that swap the mouth quads, one channel per expression.
 
     Every clip binds every quad, so one that never mentions the mouth still
-    pins it to the default.
+    pins it to the default.  The events reach every mouth at once, as the
+    game's CharacterMultiMouthEventReceiver passes them on (Tsukuyo's tree).
     """
-    if not model.mouth_nodes:
-        return []
-    keys = [(time, model.mouth_default if tile is None else tile)
-            for time, tile in model.mouth_events.get(obj_key(clip), [])]
-    keys = [(time, tile) for time, tile in keys if tile in model.mouth_nodes]
-    if not keys or keys[0][0] > 0.0:
-        keys.insert(0, (0.0, model.mouth_default))
-    if model.mouth_owner in model.face_nodes or model.mouth_switch is not None:
-        keys = without_owner(model, clip, keys)
-    times = np.array([time for time, _ in keys], dtype=np.float32)
-    return [
-        Channel(node, "weights", times,
-                np.array([[float(tile != shown)] for _, shown in keys], dtype=np.float32),
-                "STEP")
-        for tile, node in model.mouth_nodes.items()
-    ]
+    channels = []
+    for mouth in model.mouths:
+        keys = [(time, mouth.default if tile is None else tile)
+                for time, tile in model.mouth_events.get(obj_key(clip), [])]
+        keys = [(time, tile) for time, tile in keys if tile in mouth.nodes]
+        if not keys or keys[0][0] > 0.0:
+            keys.insert(0, (0.0, mouth.default))
+        if mouth.owner in model.face_nodes or mouth.switch is not None:
+            keys = without_owner(model, mouth, clip, keys)
+        times = np.array([time for time, _ in keys], dtype=np.float32)
+        channels += [
+            Channel(node, "weights", times,
+                    np.array([[float(tile != shown)] for _, shown in keys], dtype=np.float32),
+                    "STEP")
+            for tile, node in mouth.nodes.items()
+        ]
+    return channels
 
 
-def without_owner(model: ModelData, clip,
+def without_owner(model: ModelData, mouth: Mouth, clip,
                   keys: list[tuple[float, int]]) -> list[tuple[float, int | None]]:
     """The mouth track, blanked out over the stretches the mesh it came off is
     not showing -- another face worn, or the mesh switched off: a tile of None
     folds all the quads away."""
     showing = []
-    if model.mouth_owner in model.face_nodes:
-        showing.append([(time, face == model.mouth_owner)
+    if mouth.owner in model.face_nodes:
+        showing.append([(time, face == mouth.owner)
                         for time, face in worn_face(model, obj_key(clip))])
-    if model.mouth_switch is not None:
-        showing.append(switch_track(model, model.mouth_switch, obj_key(clip)))
+    if mouth.switch is not None:
+        showing.append(switch_track(model, mouth.switch, obj_key(clip)))
 
     def at(track, time, first):
         return next((value for moment, value in reversed(track) if moment <= time), first)
@@ -1226,6 +1231,16 @@ class MeshData:
 
 
 @dataclass
+class Mouth:
+    """One mouth's quads: the node carrying each tile's copy, keyed by
+    (tile id, flipped), and the tile the material is saved with."""
+    nodes: dict[tuple[int, bool], int]
+    default: tuple[int, bool]
+    owner: tuple | None = None                  # transform the quads came off
+    switch: tuple | None = None                 # the switch carrying the quads
+
+
+@dataclass
 class ModelData:
     name: str
     meshes: list[MeshData] = field(default_factory=list)
@@ -1234,13 +1249,11 @@ class ModelData:
     materials: dict[str, dict] = field(default_factory=dict)  # name -> {color, texture}
     textures: dict[str, bytes] = field(default_factory=dict)  # name -> png bytes
     seen_meshes: set = field(default_factory=set)
-    # mouth expressions: each clip's event track, and the node carrying each
-    # tile's copy of the mouth quad, keyed by (tile id, flipped)
+    # mouth expressions: each clip's event track, and the quads of every mouth
+    # the events drive
     mouth_events: dict[tuple[str, int], list[tuple[float, tuple[int, bool] | None]]] = \
         field(default_factory=dict)
-    mouth_nodes: dict[tuple[int, bool], int] = field(default_factory=dict)
-    mouth_default: tuple[int, bool] | None = None
-    mouth_owner: tuple | None = None            # transform the quads came off
+    mouths: list[Mouth] = field(default_factory=list)
     # alternate faces, keyed by the transform of the mesh each one is
     face_meshes: dict[tuple, int] = field(default_factory=dict)
     face_mouths: set = field(default_factory=set)
@@ -1253,7 +1266,6 @@ class ModelData:
     switch_tracks: dict[tuple, dict[tuple, dict[float, bool]]] = field(default_factory=dict)
     switch_rest: dict[tuple, bool] = field(default_factory=dict)
     switch_nodes: dict[tuple, list[int]] = field(default_factory=dict)
-    mouth_switch: tuple | None = None           # the switch carrying the mouth
     vanish_clips: set = field(default_factory=set)  # clips left at rest, see plan_switches
 
 
@@ -1436,7 +1448,8 @@ def split_mouth(uv: np.ndarray, primitives: list, model: ModelData) -> tuple[int
 
 
 def mouth_quads(scene: Scene, model: ModelData, skin: int | None, joints, weights,
-                verts, normals, uvs, primitives: list, found: tuple[int, dict]) -> None:
+                verts, normals, uvs, primitives: list, found: tuple[int, dict],
+                owner: tuple | None) -> None:
     """Give every expression the clips use its own copy of the mouth quad.
 
     glTF cannot animate a UV offset but can animate morph weights, which leave
@@ -1446,6 +1459,9 @@ def mouth_quads(scene: Scene, model: ModelData, skin: int | None, joints, weight
     index, mouth = found
     if len(mouth["tiles"]) < 2 or skin is None or joints is None:
         return
+    # the first mouth keeps the plain names
+    prefix = f"Mouth{len(model.mouths) + 1}" if model.mouths else "Mouth"
+    nodes = {}
     triangles, _ = primitives[index]
     vertices = np.unique(triangles)
     remap = np.zeros(len(verts), dtype=np.uint32)
@@ -1455,14 +1471,14 @@ def mouth_quads(scene: Scene, model: ModelData, skin: int | None, joints, weight
 
     del primitives[index]
     for key, material in sorted(mouth["tiles"].items()):
-        node = scene.add({"name": f"Mouth_{tile_label(key)}",
+        node = scene.add({"name": f"{prefix}_{tile_label(key)}",
                           "weights": [0.0 if key == mouth["default"] else 1.0]})
-        model.mouth_nodes[key] = node
+        nodes[key] = node
         model.meshes.append(MeshData(
-            f"Mouth_{tile_label(key)}", quad, normals[vertices], uvs[vertices],
+            f"{prefix}_{tile_label(key)}", quad, normals[vertices], uvs[vertices],
             joints[vertices], weights[vertices], [(remap[triangles], material)],
             skin, None, node, collapse))
-    model.mouth_default = mouth["default"]
+    model.mouths.append(Mouth(nodes, mouth["default"], owner))
 
 
 # Unity's BlendMode enum, for the two factors that say "alpha blending".
@@ -1943,10 +1959,9 @@ def add_renderer(scene: Scene, model: ModelData, obj, outline_mesh: bool = False
         primitives.append((tris, mat_name))
     found = split_mouth(uv, primitives, model)
     uvs = np.column_stack([uv[:, 0], 1.0 - uv[:, 1]]).astype(np.float32)
-    if found is not None and not model.mouth_nodes:
+    if found is not None:
         mouth_quads(scene, model, skin_index, joints, weights, verts, normals, uvs,
-                    primitives, found)
-        model.mouth_owner = obj_key(transform) if transform is not None else None
+                    primitives, found, obj_key(transform) if transform is not None else None)
     if primitives:
         model.meshes.append(MeshData(mesh.m_Name.removeprefix("OL_") if outline_mesh else mesh.m_Name,
                                      verts, normals, uvs, joints, weights,
