@@ -124,6 +124,18 @@ Without a follower, the halo is attached to `Bip001 Head` and keeps its rest
 placement. Without a renderable `HaloRoot`, the halo objects in the model
 prefabs are used.
 
+Mika's halo trail (`trail1`, `trail2`) is a particle system, not a mesh. Each
+emitter draws a single mesh particle that stays on its emitter all the time.
+A `ParticleSystemRenderer` that matches this is exported as a fixed mesh,
+scaled by the particle's start size. The rules: mesh render mode, local
+alignment, at most one particle, no start speed or start rotation, a lifetime
+that outlasts the loop, and no modules except Initial, Emission, Rotation and
+CustomData. Its DSFX shader has no `_MainTex`. The exporter bakes `_Tex_Main`,
+tinted by `_Color`, with its alpha multiplied by `_Tex_Mask` (R times A). Each
+texture keeps its saved tiling and offset. An HDR `_Color` keeps its hue but
+is scaled down to 1, because clipping it turns the gradient white. Other
+particles (sparkles, drips) are not exported.
+
 **Parts only the runtime prefab has.** The runtime prefab adds a few top-level
 parts that the model prefab lacks: Ibuki's second face, Koharu's and Takane's
 weapons, Momoi's and Midori's gamepad, Hanae (Christmas)'s sack. It draws them
@@ -275,7 +287,8 @@ A few meshes hang off the model root with no bone above them. For these, a
 binding that only holds the mesh still means nothing, so the exporter uses the
 clips that actually animate it. Such a mesh that rests on the floor (`y = 0`,
 within 0.02) counts as set dressing and is never a prop (Yoshimi's amplifier).
-The halo is never a prop.
+The halo is never a prop, and neither is anything under it, such as Mika's
+trail meshes.
 
 **Animations.** The clips are Mecanim. Curves are packed in
 `m_MuscleClip.m_Clip` as three concatenated arrays: streamed (sparse keys),
@@ -317,5 +330,8 @@ between keys.
   `OL_` copies.
 - Prop detection is inferred from clip bindings and, for meshes with no bone,
   from floor contact. A prop modelled at floor level is always kept.
+- Mika's halo trail does not move. In the game it spins slowly, about 3° a
+  second, and its mask scrolls by particle custom data. The halo's sparkle
+  particles are missing.
 - Props the game spawns on separate rigs (Shiroko＊Terror's pufferfish,
   Cherino's capybara, Utaha's robots) are effects and are not exported.

@@ -1531,6 +1531,62 @@ def alpha_mode(material, floats: dict) -> tuple[str, float]:
     return ("BLEND", 0.5) if transparent else ("OPAQUE", 0.5)
 
 
+# the largest side of a baked FX texture
+FX_TEXTURE_LIMIT = 2048
+
+
+def fx_texture(name: str, tex_envs: dict, colors: dict) -> bytes | None:
+    """The DSFX effect shaders' `_Tex_Main`, tinted by `_Color` and cut out by
+    `_Tex_Mask`, baked into one image of the mesh's UV square.
+
+    The shader tiles and offsets each texture on its own, and scrolls them by
+    particle custom data; the bake keeps the saved tiling and offset only.
+    The mask is grey in its RGB or in its alpha, so it counts as R times A.
+    An HDR tint, there for bloom, keeps its hue and loses its overbright:
+    clipping it would wash the gradient out to white.
+    """
+    layers = []
+    for key in ("_Tex_Main", "_Tex_Mask"):
+        env = tex_envs.get(key)
+        if env is None or env.m_Texture is None or not env.m_Texture.path_id:
+            continue
+        try:
+            image = env.m_Texture.read().image.convert("RGBA")
+        except Exception as e:
+            print(f"  {name} bakes without {key}: {type(e).__name__}: {e}")
+            continue
+        layers.append((key, np.asarray(image, dtype=np.float32) / 255.0,
+                       np.array([env.m_Scale.x, env.m_Scale.y]),
+                       np.array([env.m_Offset.x, env.m_Offset.y])))
+    if not layers or layers[0][0] != "_Tex_Main":
+        return None
+    # enough pixels for the most tiled texture to keep its own resolution
+    width = min(FX_TEXTURE_LIMIT, max(round(p.shape[1] * abs(s[0])) for _, p, s, _ in layers))
+    height = min(FX_TEXTURE_LIMIT, max(round(p.shape[0] * abs(s[1])) for _, p, s, _ in layers))
+    # Unity's UV origin is bottom-left, the image's is top-left.
+    u, v = np.meshgrid((np.arange(width) + 0.5) / width, 1.0 - (np.arange(height) + 0.5) / height)
+
+    def sample(pixels, scale, offset):
+        rows, cols = pixels.shape[:2]
+        su = (u * scale[0] + offset[0]) % 1.0
+        sv = (v * scale[1] + offset[1]) % 1.0
+        return pixels[np.minimum(((1.0 - sv) * rows).astype(int), rows - 1),
+                      np.minimum((su * cols).astype(int), cols - 1)]
+
+    out = sample(*layers[0][1:]).copy()
+    tint = colors.get("_Color")
+    if tint is not None:
+        rgb = np.array([tint.r, tint.g, tint.b])
+        out *= [*(rgb / max(1.0, rgb.max())), min(1.0, tint.a)]
+    for _, pixels, scale, offset in layers[1:]:
+        mask = sample(pixels, scale, offset)
+        out[..., 3] *= mask[..., 0] * mask[..., 3]
+    buf = io.BytesIO()
+    Image.fromarray((np.clip(out, 0.0, 1.0) * 255).round().astype(np.uint8), "RGBA").save(
+        buf, format="PNG")
+    return buf.getvalue()
+
+
 def read_material(material, model: ModelData) -> str:
     name = material.m_Name
     if name in model.materials:
@@ -1551,6 +1607,11 @@ def read_material(material, model: ModelData) -> str:
             png = None
         if png is not None:
             tex_name = texture.m_Name
+            model.textures.setdefault(tex_name, png)
+    elif "_Tex_Main" in tex_envs:
+        png = fx_texture(name, tex_envs, colors)
+        if png is not None:
+            tex_name = f"{name}_Baked"
             model.textures.setdefault(tex_name, png)
 
     # Materials without a texture (eyebrows) carry their colour in _Tint / _Color.
@@ -1576,6 +1637,47 @@ def mesh_of(renderer, obj_type: str, game_object):
         if type(comp).__name__ == "MeshFilter" and comp.m_Mesh.path_id:
             return comp.m_Mesh.read()
     return None
+
+
+# ParticleSystemRenderMode.Mesh and ParticleSystemRenderSpace.Local
+PARTICLE_MESH_MODE, PARTICLE_LOCAL_ALIGNMENT = 4, 2
+# modules that leave a lone particle where and as it was born; the spin of
+# RotationModule and the shader data of CustomDataModule are not exported
+STILL_PARTICLE_MODULES = {"InitialModule", "EmissionModule", "RotationModule", "CustomDataModule"}
+
+
+def particle_mesh(obj):
+    """The mesh and size of a particle renderer that amounts to a fixed mesh,
+    else None.
+
+    Mika's halo trail is one mesh particle: born on its emitter with no speed
+    or turn, aligned with it, outliving the loop, so always there.
+    """
+    try:
+        renderer = obj.read()
+        if (not renderer.m_Enabled or renderer.m_RenderMode != PARTICLE_MESH_MODE
+                or renderer.m_RenderAlignment != PARTICLE_LOCAL_ALIGNMENT
+                or renderer.m_Mesh is None or not renderer.m_Mesh.path_id):
+            return None
+        system = next(pair.component.read_typetree()
+                      for pair in renderer.m_GameObject.read().m_Component
+                      if pair.component.type.name == "ParticleSystem")
+    except Exception:
+        return None
+    initial = system["InitialModule"]
+    enabled = {k for k, v in system.items() if isinstance(v, dict) and v.get("enabled")}
+    curves = ("startSize", "startSizeY", "startSizeZ", "startSpeed", "startRotation",
+              "startLifetime")
+    if (initial["maxNumParticles"] != 1 or not enabled <= STILL_PARTICLE_MODULES
+            or initial["rotation3D"] or not system["looping"]
+            or any(initial[k]["minMaxState"] != 0 for k in curves)
+            or initial["startSpeed"]["scalar"] or initial["startRotation"]["scalar"]
+            or initial["startLifetime"]["scalar"] < system["lengthInSec"]):
+        return None
+    size = initial["startSize"]["scalar"]
+    if initial["size3D"]:
+        size = [size, initial["startSizeY"]["scalar"], initial["startSizeZ"]["scalar"]]
+    return renderer.m_Mesh.read(), np.broadcast_to(np.array(size, dtype=np.float64), 3)
 
 
 def model_prefabs(env) -> set[tuple[str, int]]:
@@ -1653,7 +1755,9 @@ def renderers_under(transform, out: list, skip_halos: bool = False) -> None:
     if not game_object.m_IsActive:
         return
     for pair in game_object.m_Component:
-        if pair.component.type.name in ("SkinnedMeshRenderer", "MeshRenderer"):
+        kind = pair.component.type.name
+        if (kind in ("SkinnedMeshRenderer", "MeshRenderer")
+                or kind == "ParticleSystemRenderer" and particle_mesh(pair.component)):
             out.append(pair.component)
     for child in transform.m_Children:
         renderers_under(child.read(), out, skip_halos)
@@ -1819,6 +1923,11 @@ def mark_props(scene: Scene, model: ModelData) -> None:
                      if index is not None)
         if not nodes or is_halo(mesh.name):
             continue
+        # a halo's particle meshes are named for the effect, not the halo
+        if any(is_halo(scene.nodes[node].get("name", ""))
+               for index in (mesh.owner, mesh.node, mesh.parent)
+               for node in chain(index, parents)):
+            continue
         # A mesh on a bone is out whenever a clip binds it, still or not; a
         # mesh the rig does not carry at all is placed by its own curves or
         # not at all, so it goes by which clips drive it instead.
@@ -1906,12 +2015,19 @@ def extract(env, name: str, animations: bool = True, runtime=None, rig: str = ""
 def add_renderer(scene: Scene, model: ModelData, obj, outline_mesh: bool = False) -> None:
     renderer = obj.read()
     game_object = renderer.m_GameObject.read()
-    mesh = mesh_of(renderer, obj.type.name, game_object)
+    size = None
+    if obj.type.name == "ParticleSystemRenderer":
+        mesh, size = particle_mesh(obj) or (None, None)
+    else:
+        mesh = mesh_of(renderer, obj.type.name, game_object)
     if mesh is None or (mesh.m_Name.startswith("OL_") and not outline_mesh):
         return  # OL_ meshes are the inverted-hull outline duplicates
-    if obj_key(mesh) in model.seen_meshes:
-        return  # the same mesh is sometimes referenced from several bundles
-    model.seen_meshes.add(obj_key(mesh))
+    # the same mesh is sometimes referenced from several bundles; particle
+    # emitters share one on purpose, so theirs count once per emitter
+    key = obj_key(mesh) if size is None else (obj_key(mesh), obj_key(game_object))
+    if key in model.seen_meshes:
+        return
+    model.seen_meshes.add(key)
 
     handler = MeshHandler(mesh)
     handler.process()
@@ -1920,9 +2036,10 @@ def add_renderer(scene: Scene, model: ModelData, obj, outline_mesh: bool = False
 
     # vertices stay in mesh space: the bind poses are the inverse binds, so
     # the skin places them at runtime
-    verts = (np.array(handler.m_Vertices)[:, :3] * UNITY_TO_GLTF).astype(np.float32)
+    scale = np.ones(3) if size is None else size  # a particle's size scales its mesh
+    verts = (np.array(handler.m_Vertices)[:, :3] * scale * UNITY_TO_GLTF).astype(np.float32)
     if handler.m_Normals:
-        normals = (np.array(handler.m_Normals)[:, :3] * UNITY_TO_GLTF).astype(np.float32)
+        normals = (np.array(handler.m_Normals)[:, :3] / scale * UNITY_TO_GLTF).astype(np.float32)
         lengths = np.linalg.norm(normals, axis=1, keepdims=True)
         normals = np.divide(normals, lengths, out=np.zeros_like(normals), where=lengths > 1e-8)
     else:
