@@ -19,9 +19,9 @@ RENDERER_EVENTS = {"AniEvt_EnableChildRenderer": True,
 
 
 def switch_children(roots, runtime, prefab_halo=None,
-                    counterparts: dict | None = None) -> tuple[list, set]:
+                    counterparts: dict | None = None) -> tuple[list, list]:
     """The objects an AniEvt renderer event counts through, in its order, and
-    the keys of those whose renderer starts switched off.
+    the keys of those whose renderer starts switched off, in the same order.
 
     The number is an index into the children of the runtime prefab the game
     instantiates, which orders them differently from the model FBX -- the
@@ -34,22 +34,22 @@ def switch_children(roots, runtime, prefab_halo=None,
     the best guess.  For `counterparts`, see runtime_parts().
     """
     if not roots:
-        return [], set()
+        return [], []
     own = [child.read() for child in roots[0].m_Children]
     if runtime is None:
-        return own, set()
+        return own, []
     by_name = {child.m_GameObject.read().m_Name: child for child in own}
     if prefab_halo is not None:
         by_name.setdefault(prefab_halo.m_GameObject.read().m_Name, prefab_halo)
     by_name |= counterparts or {}
-    children, off = [], set()
+    children, off = [], []
     for child in runtime.m_Children:
         game_object = child.read().m_GameObject.read()
         renderers = [pair.component.read() for pair in game_object.m_Component
                      if pair.component.type.name in ("SkinnedMeshRenderer", "MeshRenderer")]
         children.append(by_name.get(game_object.m_Name) if renderers else None)
         if children[-1] is not None and not all(r.m_Enabled for r in renderers):
-            off.add(obj_key(children[-1]))
+            off.append(obj_key(children[-1]))
     return children, off
 
 
@@ -218,7 +218,7 @@ def mesh_node(scene: Scene, data: MeshData) -> int:
     return data.node
 
 
-def plan_switches(scene: Scene, model: ModelData, children: list, off: set, clips,
+def plan_switches(scene: Scene, model: ModelData, children: list, off: list, clips,
                   targets: dict[int, object], parents: dict[int, int],
                   cafe_children: list | None = None) -> None:
     """Settle what the clips switch on and off, and give each mesh a way to fold.
