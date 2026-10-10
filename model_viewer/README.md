@@ -38,6 +38,26 @@ sorted with `Cafe_Reaction` first, then the other shared cafe and formation
 clips, EX clips and the common combat states; character-specific clips follow
 alphabetically. The viewer opens `Cafe_Reaction`.
 
+## Code layout
+
+`export_models.py` is only the command line. The export itself lives in the
+`exporter/` package:
+
+| Module | Contents |
+|---|---|
+| `bundles.py` | Finding bundles, the cross-bundle index, wiki names for models |
+| `prefabs.py` | The model prefab's rig and halo, the runtime prefab, halo attachment |
+| `geometry.py` | Renderers into meshes, skins and primitives |
+| `materials.py` | Base texture, colour and alpha mode of each material |
+| `mouth.py` | Mouth atlas tiles and the copy of the mouth quad for each |
+| `fx.py` | Particle meshes and the baked DSFX effect textures |
+| `clips.py` | Decoding Mecanim curves, picking the character's own clips |
+| `switches.py` | What the clips switch on and off: parts, faces, mouth tiles |
+| `props.py` | Which meshes are props, and which clips have each one out |
+| `glb.py` | Writing the `.glb` |
+| `extract.py` | One character's export, start to finish |
+| `scene.py` | The node hierarchy and the data classes the others share |
+
 ## Wiki manifest
 
 From the bot repository root:
