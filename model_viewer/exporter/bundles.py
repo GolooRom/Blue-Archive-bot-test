@@ -35,6 +35,12 @@ DEVNAME_MAPS = (REPO / "json" / "devname_map.json",
 # Some bundles are named for a model prefab code the maps lack (`ch0061`); the
 # costume table ties each prefab to costume dev names the maps do know.
 COSTUME_TABLE = REPO / "json" / "CostumeExcelTable.json"
+# Bundles no table covers. The `sm` bundles hold special animations of one
+# costume; the `st` and `ladies` bundles hold nothing but a halo and are not
+# exported.
+MANUAL_NAMES = {"sm030001": "Kikyou (Swimsuit) (Special)",
+                "sm032601": "Reisa (Magical) (Special)"}
+HALO_ONLY_RE = re.compile(r"^(st[0-9]|ladies)")
 QUALIFIERS = {"cutin": "Cut-in", "nonweapon": "No Weapon", "scenario": "Scenario",
               "carrier": "Carrier"}
 
@@ -130,7 +136,7 @@ def list_characters(bundle_dir: Path) -> list[str]:
     names = set()
     for bundle in bundle_dir.glob("assets-_mx-characters-*.bundle"):
         match = CHARACTER_BUNDLE_RE.match(bundle.name)
-        if match:
+        if match and not HALO_ONLY_RE.match(match.group(1)):
             names.add(match.group(1))
     return sorted(names)
 
@@ -189,14 +195,16 @@ def model_names(bundles: list[str]) -> dict[str, str]:
     `aru_newyear` becomes `Aru (New Year)`. A bundle whose name the map covers
     only up to a suffix carries that suffix as a second parenthesis —
     `ch0334_carrier` is `Arisu (Battle) (Carrier)` — and one the map does not
-    know at all keeps its own name.  Bundles that land on the same name get
-    their own trailing number appended.
+    know at all keeps its own name, unless MANUAL_NAMES names it.  Bundles
+    that land on the same name get their own trailing number appended.
     """
     devnames = read_devname_map()
     names = {}
     for bundle in bundles:
         stem = bundle.removesuffix("_original").split("_")
-        names[bundle] = bundle
+        names[bundle] = MANUAL_NAMES.get(bundle, bundle)
+        if bundle in MANUAL_NAMES:
+            continue
         for i in range(len(stem), 0, -1):
             name = devnames.get("_".join(stem[:i]))
             if name:

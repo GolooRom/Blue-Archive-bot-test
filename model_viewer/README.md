@@ -101,8 +101,12 @@ The module is adapted from
 model prefab code that the maps lack, such as `ch0061`, are resolved through
 `json/CostumeExcelTable.json`. A suffix the tables do not cover becomes a
 second parenthesis: `ch0334_carrier` is `Arisu (Battle) (Carrier).glb`. Two
-bundles that map to the same name get their trailing number appended. A bundle
-that no table covers (`sm030001`, `ladies_biker_ar`) keeps its own name.
+bundles that map to the same name get their trailing number appended. Bundles
+that no table covers are named by hand in `MANUAL_NAMES` in `bundles.py`:
+`sm030001` and `sm032601` hold special animations, saved as
+`Kikyou (Swimsuit) (Special).glb` and `Reisa (Magical) (Special).glb`. Any
+other uncovered bundle keeps its own name. The `st*` and `ladies*` bundles hold
+only a halo; they are left out of `--list` and `--all`.
 `--list` prints both names, and the CLI accepts either. Internally the exporter
 works with the bundle name: it names the prefabs to read and the prefix to
 strip from clip names.
