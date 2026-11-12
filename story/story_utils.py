@@ -299,6 +299,70 @@ def make_story_nav(story: StoryInfo,
         story.add_nav_arg(k, v, before="title")
 
 
+def migrate_editor_nav_links(nav: Template, existing_text: str):
+    """The bot always owns the unnumbered prev/next slot. If the page has a different link there
+    and also uses the numbered slots (e.g. next_page2), an editor put it there, so move it to a
+    numbered slot: the slot that holds the generated link if the editor moved it there,
+    otherwise the first free slot from 2. Without next_page2, the link is just an outdated bot
+    link and is overwritten."""
+    existing = find_template(parse(existing_text), nav.name.strip())
+    if existing is None:
+        return
+
+    def normalize(title: str) -> str:
+        title = title.replace("_", " ").strip()
+        return title[:1].upper() + title[1:]
+
+    def value(key: str) -> str | None:
+        arg = existing.get_arg(key)
+        return None if arg is None else arg.value.strip()
+
+    for direction in ["prev", "next"]:
+        page_key, title_key = f"{direction}_page", f"{direction}_title"
+        generated_page = nav.get_arg(page_key)
+        editor_page = value(page_key)
+        if generated_page is None or editor_page is None:
+            continue
+        if normalize(editor_page) == normalize(generated_page.value):
+            continue
+        if existing.get_arg(f"{page_key}2") is None:
+            continue
+        suffixes = set()
+        target = None
+        for arg in existing.arguments:
+            match = re.fullmatch(rf"{direction}_(?:page|title)(\d+)", arg.name.strip())
+            if match is None:
+                continue
+            suffixes.add(int(match.group(1)))
+            if (target is None and arg.name.strip().startswith(page_key)
+                    and normalize(arg.value) == normalize(generated_page.value)):
+                target = int(match.group(1))
+        if target is None:
+            target = 2
+            while target in suffixes:
+                target += 1
+        nav.set_arg(f"{page_key}{target}", editor_page)
+        editor_title = value(title_key)
+        if editor_title is not None:
+            nav.set_arg(f"{title_key}{target}", editor_title)
+
+
+def keep_extra_nav_args(nav: Template, existing_text: str):
+    """Copy over arguments that editors added to the nav template on the page and that the bot
+    does not generate, such as extra buttons (next_page2, prev_title3, ...) linking to exploration
+    stories. The bot keeps updating the arguments it generates and leaves the rest alone."""
+    existing = find_template(parse(existing_text), nav.name.strip())
+    if existing is None:
+        return
+    generated = {arg.name.strip() for arg in nav.arguments}
+    # MediaWiki uses the last value when an argument is repeated
+    extra = {arg.name.strip(): arg.value.strip()
+             for arg in existing.arguments
+             if not arg.positional and arg.name.strip() not in generated}
+    for name, value in extra.items():
+        nav.set_arg(name, value)
+
+
 def match_nav_arg_order(nav: Template, existing_text: str):
     """Reorder nav's arguments to follow the order the same template already uses on the page.
 
@@ -336,6 +400,10 @@ def nav_is_compact(nav: Template, existing_text: str) -> bool | None:
 
 def save_story_page(page: Page, story: StoryInfo, summary: str):
     existing_text = page.text
+    migrate_editor_nav_links(story.nav_top, existing_text)
+    migrate_editor_nav_links(story.nav_bottom, existing_text)
+    keep_extra_nav_args(story.nav_top, existing_text)
+    keep_extra_nav_args(story.nav_bottom, existing_text)
     match_nav_arg_order(story.nav_top, existing_text)
     match_nav_arg_order(story.nav_bottom, existing_text)
     compact = nav_is_compact(story.nav_top, existing_text)
