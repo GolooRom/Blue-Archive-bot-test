@@ -8,6 +8,23 @@ from story.story_utils import strip_st_line, get_story_event, make_categories, g
     StoryInfo
 from utils import get_bgm_file_info, music_file_name_to_title, get_background_file_name, signature_escape
 
+# The game's default text size. A "#fontsize;N" command in the script sets the size of that line, and it is written
+# to the wiki as a font-size span of N / BASE_FONTSIZE * 100 percent. The real default is not confirmed (60 is the
+# size most screen-text lines use), so change this one number if the percentages look wrong.
+BASE_FONTSIZE = 60
+fontsize_regex = re.compile(r"#fontsize;(\d+)")
+
+
+def apply_size(text: str, size: int | None) -> str:
+    """Wrap text in a font-size span relative to the game's default size.
+    Lines without #fontsize (size None), empty lines and lines at the default size are left alone."""
+    if size is None or text.strip() == "":
+        return text
+    percent = round(size / BASE_FONTSIZE * 100)
+    if percent == 100:
+        return text
+    return f'<span style="font-size:{percent}%;">{text}</span>'
+
 
 def story_type_to_cat(story_type: StoryType):
     return {
@@ -133,6 +150,10 @@ def parse_story(lines: list[dict], story_type: StoryType, character_name: str = 
             add_info("To be continued")
             continue
 
+        # The size has to be read before process_special_effects removes the #fontsize command
+        fontsize_match = fontsize_regex.search(lower)
+        fontsize = int(fontsize_match.group(1)) if fontsize_match is not None else None
+
         is_st_line, lower = process_special_effects(lower, events)
 
         lower = lower.strip()
@@ -165,11 +186,11 @@ def parse_story(lines: list[dict], story_type: StoryType, character_name: str = 
         elif lower.startswith("#nextepisode;"):
             add_info(text.replace(";", ": "))
         elif lower.startswith("#na;("):
-            text = process_info(text)
+            text = apply_size(process_info(text), fontsize)
             add_info(text, option_dict)
             # TODO: deal with na issues
         elif lower.startswith("#na;") and (len(character_query_result) == 0 or character_query_result[0][0] is None):
-            text = process_info(text)
+            text = apply_size(process_info(text), fontsize)
             add_info(text, option_dict)
         elif re.search(r"\[n?s\d*]", text) is not None:
             options = re.split(r"\[n?s\d*]", text)
@@ -178,7 +199,7 @@ def parse_story(lines: list[dict], story_type: StoryType, character_name: str = 
             if len(options) == 0:
                 raise RuntimeError("Expected at least 1 option for " + text)
             elif len(options) == 1:
-                events.append({"": "sensei", "text": options[0]} | option_dict)
+                events.append({"": "sensei", "text": apply_size(options[0], fontsize)} | option_dict)
             else:
                 # sensei or reply
                 option_group += 1
@@ -223,11 +244,11 @@ def parse_story(lines: list[dict], story_type: StoryType, character_name: str = 
                         "spine": spine,
                         "sequence": str(sequence)
                     }
-                event = {"": "student-text", "name": name, "affiliation": nickname, "text": text}
+                event = {"": "student-text", "name": name, "affiliation": nickname, "text": apply_size(text, fontsize)}
                 event = event | portrait_dict | option_dict
                 events.append(event)
         elif text != "":
-            text = process_info(text)
+            text = apply_size(process_info(text), fontsize)
             add_info(text, option_dict)
         else:
             pass
