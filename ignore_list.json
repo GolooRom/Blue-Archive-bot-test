@@ -1,1 +1,13 @@
-[]
+[
+    {
+        "page": "https://bluearchive.wiki/wiki/Hoshino_(Battle)_Attacker/story",
+        "single_page": true,
+        "ignore": "everything"
+    },
+    {
+        "page": "https://bluearchive.wiki/wiki/Code:_BOX_Shadow_Looming_Over_Millennium_%EF%BD%9EOne_Question_and_Two_Answers%EF%BD%9E/Story",
+        "range": [1, 9],
+        "all_subpages": true,
+        "ignore": ["Story/StoryTop", "Story/StoryBottom"]
+    }
+]

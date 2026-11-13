@@ -1,43 +1,50 @@
 [
     {
-        "_comment": "TEMPLATE ONLY. The bot never reads this file; the real list is ignore_list.json. Copy blocks from here into it.",
-        "_how_it_works": "A list with one block per page. A block says which pages it covers and what the bot must leave alone.",
-        "_page": "Page title or a full https://bluearchive.wiki/wiki/... URL.",
-        "_single_page": "true = covers the page itself.",
-        "_range": "[first, last] = covers Page/first to Page/last (numbered subpages only).",
-        "_all_subpages": "true = covers every page below the page, at any depth (Page/1, Page/2/1, ...).",
-        "_ignore": "\"everything\" (the default) = the bot does not touch the page. Or a list of template names = the bot keeps those templates from the wiki and still updates the rest.",
-        "_defaults": "If none of single_page, range, all_subpages is given, the block covers the page itself."
+        "_comment": "THIS FILE IS ONLY AN EXAMPLE. The bot never reads it. The list the bot really uses is ignore_list.json. Copy the blocks you want from here into that file.",
+        "_how_it_works": "The list has one block per page. Each block says which pages it applies to and what the bot must not change on them.",
+        "_page": "The page. Write a page title or a full https://bluearchive.wiki/wiki/... link. A slash at the end is fine.",
+        "_single_page": "true = the block applies to the page itself.",
+        "_range": "[first, last] = the block applies to the numbered subpages from Page/first to Page/last, for example [1, 9] means Page/1 to Page/9.",
+        "_all_subpages": "true = the block applies to every page under the page, however deep (Page/1, Page/12, Page/2/1 and so on). This already includes everything a range would cover.",
+        "_ignore": "What the bot must not change. \"everything\" (the default) = the bot leaves the whole page alone. A list of template names = the bot keeps those templates exactly as they are on the wiki, but still updates everything else on the page.",
+        "_defaults": "If you give none of single_page, range or all_subpages, the block applies to the page itself.",
+        "_examples": "The pages below are real wiki pages. They are only there to show the format."
     },
     {
-        "_comment": "Page A: ignore the single page, ignore everything",
-        "page": "Page A",
+        "_comment": "Example 1: the bot never touches this one page. Nothing on it is updated.",
+        "page": "https://bluearchive.wiki/wiki/Hoshino_(Battle)_Attacker/story",
         "single_page": true,
         "ignore": "everything"
     },
     {
-        "_comment": "Page B: ignore range 1 to 9, ignore templates Alpha and Beta, ignore all subpages",
-        "page": "Page B",
+        "_comment": "Example 2: on Story/1 to Story/9 and on every other page under Story (the main page that holds them is not included), the bot keeps the templates Story/StoryTop and Story/StoryBottom as they are on the wiki. It still updates the rest of those pages.",
+        "page": "https://bluearchive.wiki/wiki/Code:_BOX_Shadow_Looming_Over_Millennium_%EF%BD%9EOne_Question_and_Two_Answers%EF%BD%9E/Story",
         "range": [1, 9],
         "all_subpages": true,
-        "ignore": ["Alpha", "Beta"]
+        "ignore": ["Story/StoryTop", "Story/StoryBottom"]
     },
     {
-        "_comment": "Page C: ignore range 1 to 5 (everything)",
-        "page": "Page C",
+        "_comment": "Example 3: the bot never touches Story/1 to Story/5 (the numbered pages under Steel_Continent_Assault/Story). It still updates Story/6 and later, and the main Steel_Continent_Assault/Story page that holds them.",
+        "page": "https://bluearchive.wiki/wiki/Steel_Continent_Assault/Story",
         "range": [1, 5]
     },
     {
-        "_comment": "Page D: ignore the single page, everything, all subpages",
-        "page": "Page D",
+        "_comment": "Example 4: the same as Example 3, but it also ignores the main page that holds the numbered pages. single_page: true is what adds the main page. Here the bot never touches the main Kivotos_Unsolved_Mysteries Story page, or Story/1 to Story/5 under it. Story/6 and later are still updated.",
+        "page": "https://bluearchive.wiki/wiki/Kivotos_Unsolved_Mysteries_%EF%BD%9EThe_Great_Tsuchinoko_Investigation_to_Ward_Off_Evil%EF%BD%9E/Story",
+        "single_page": true,
+        "range": [1, 5]
+    },
+    {
+        "_comment": "Example 5: the bot never touches this page or any page under it.",
+        "page": "https://bluearchive.wiki/wiki/Summer_Sky%27s_Wishlist",
         "single_page": true,
         "all_subpages": true,
         "ignore": "everything"
     },
     {
-        "_comment": "Page E: ignore the single page, only template Charlie",
-        "page": "Page E",
+        "_comment": "Example 6: on this one page, the bot keeps only the template Story/StoryBottom as it is on the wiki. All other templates and text on the page are still overwritten.",
+        "page": "https://bluearchive.wiki/wiki/Clear_Skies_After_the_Storm/Story/9",
         "single_page": true,
-        "ignore": ["Charlie"]
+        "ignore": ["Story/StoryBottom"]
     }
 ]
