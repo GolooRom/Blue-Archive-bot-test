@@ -4,7 +4,7 @@ from pywikibot import Page
 from pywikibot.pagegenerators import PreloadingGenerator
 import sys
 
-from utils import get_character_table, load_momotalk, load_favor_schedule
+from utils import get_character_table, load_momotalk, load_favor_schedule, save_page
 
 sys.stdout.reconfigure(encoding='utf-8')
 
@@ -200,8 +200,7 @@ def create_momotalk_page(p: pwb.Page, student_name, text):
         x = input(f"Save {p.title()}? ")
         if x.lower() == 'a':
             confirm = False
-    p.text = text
-    p.save("auto-generate momotalk")
+    save_page(p, text, summary="auto-generate momotalk")
 
 
 def get_character_favor_schedule(char_id: int) -> list[int]:

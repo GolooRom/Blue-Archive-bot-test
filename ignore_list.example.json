@@ -1,0 +1,43 @@
+[
+    {
+        "_comment": "TEMPLATE ONLY. The bot never reads this file; the real list is ignore_list.json. Copy blocks from here into it.",
+        "_how_it_works": "A list with one block per page. A block says which pages it covers and what the bot must leave alone.",
+        "_page": "Page title or a full https://bluearchive.wiki/wiki/... URL.",
+        "_single_page": "true = covers the page itself.",
+        "_range": "[first, last] = covers Page/first to Page/last (numbered subpages only).",
+        "_all_subpages": "true = covers every page below the page, at any depth (Page/1, Page/2/1, ...).",
+        "_ignore": "\"everything\" (the default) = the bot does not touch the page. Or a list of template names = the bot keeps those templates from the wiki and still updates the rest.",
+        "_defaults": "If none of single_page, range, all_subpages is given, the block covers the page itself."
+    },
+    {
+        "_comment": "Page A: ignore the single page, ignore everything",
+        "page": "Page A",
+        "single_page": true,
+        "ignore": "everything"
+    },
+    {
+        "_comment": "Page B: ignore range 1 to 9, ignore templates Alpha and Beta, ignore all subpages",
+        "page": "Page B",
+        "range": [1, 9],
+        "all_subpages": true,
+        "ignore": ["Alpha", "Beta"]
+    },
+    {
+        "_comment": "Page C: ignore range 1 to 5 (everything)",
+        "page": "Page C",
+        "range": [1, 5]
+    },
+    {
+        "_comment": "Page D: ignore the single page, everything, all subpages",
+        "page": "Page D",
+        "single_page": true,
+        "all_subpages": true,
+        "ignore": "everything"
+    },
+    {
+        "_comment": "Page E: ignore the single page, only template Charlie",
+        "page": "Page E",
+        "single_page": true,
+        "ignore": ["Charlie"]
+    }
+]

@@ -6,8 +6,9 @@ from dataclasses import dataclass
 from functools import cache
 from pathlib import Path
 from typing import Any
+from urllib.parse import unquote, urlparse
 
-from pywikibot import Page, Site
+from pywikibot import Page, Site, showDiff
 from pywikibot.pagegenerators import GeneratorFactory
 from wikitextparser import parse, WikiText, Template
 
@@ -240,6 +241,10 @@ def save_json_page(page: Page | str, obj, summary: str = "update json page"):
     if isinstance(page, str):
         page = Page(s, page)
 
+    if get_ignore_rules(page.title())[0]:
+        print(f"Ignored {page.title()} (in ignore_list.json)")
+        return
+
     if page.text != "":
         original = dump(json.loads(page.text))
     else:
@@ -262,11 +267,213 @@ def find_template(w: WikiText, name: str) -> Template | None:
     return None
 
 
+IGNORE_LIST_PATH = Path(__file__).parent / "ignore_list.json"
+
+
+def normalize_template_name(name: str) -> str:
+    name = name.strip().replace("_", " ")
+    name = re.sub(r"\s+", " ", name)
+    name = re.sub(r"^template ?:", "", name, flags=re.IGNORECASE).strip()
+    return name.lower()
+
+
+def normalize_page_title(title: str) -> str:
+    """Accepts a plain page title or a full https://bluearchive.wiki/wiki/... URL.
+    Underscores become spaces and a trailing slash is dropped."""
+    title = title.strip()
+    if title.startswith(("http://", "https://")):
+        path = urlparse(title).path
+        if "/wiki/" not in path:
+            raise ValueError(f"Not a wiki page URL: {title}")
+        title = unquote(path.split("/wiki/", 1)[1])
+    return title.replace("_", " ").strip().rstrip("/").strip()
+
+
+def parse_template_names(names, where: str) -> frozenset[str]:
+    if not isinstance(names, list) or len(names) == 0 or not all(isinstance(n, str) for n in names):
+        raise ValueError(f"{IGNORE_LIST_PATH.name}: {where}: expected a non-empty list of template names")
+    return frozenset("*" if n.strip() == "*" else normalize_template_name(n) for n in names)
+
+
+@dataclass(frozen=True)
+class IgnoreRule:
+    title: str                                         # the page this block is about, e.g. "Some Event/Story"
+    single_page: bool                                  # covers the page itself
+    number_range: tuple[int, int] | None               # covers the pages "<title>/<number>" for numbers in this range
+    all_subpages: bool                                 # covers every page below the page, at any depth
+    templates: frozenset[str] | None                   # None = ignore everything, otherwise only these templates
+
+    def matches(self, title: str) -> bool:
+        """Does this block cover this (normalized) page title?"""
+        if self.single_page and title == self.title:
+            return True
+        prefix = self.title + "/"
+        if not title.startswith(prefix):
+            return False
+        if self.all_subpages:
+            return True
+        if self.number_range is not None:
+            child = title[len(prefix):]
+            if child.isascii() and child.isdigit():
+                return self.number_range[0] <= int(child) <= self.number_range[1]
+        return False
+
+
+IGNORE_BLOCK_KEYS = {"page", "single_page", "range", "all_subpages", "ignore"}
+
+
+@cache
+def load_ignore_list() -> list[IgnoreRule]:
+    """Reads ignore_list.json: a list with one block per page.
+
+        {
+            "page":         "Some Event/Story",      the page (a title or a full wiki URL, no trailing slash needed)
+            "single_page":  true,                    cover the page itself
+            "range":        [1, 9],                  cover "Some Event/Story/1" to "Some Event/Story/9"
+            "all_subpages": true,                    cover every page below the page, at any depth
+            "ignore":       "everything"             what the bot must leave alone: "everything" (the default) or
+                                                     a list of template names, e.g. ["Story/StoryTop", "Alpha"]
+        }
+
+    Pick any of single_page, range and all_subpages. If you pick none, the block covers the page itself.
+    A page can have several blocks. Blocks that only have keys starting with "_" are ignored (comments).
+    "*" in a template list means every template."""
+    if not IGNORE_LIST_PATH.exists():
+        return []
+    with open(IGNORE_LIST_PATH, "r", encoding="utf-8") as f:
+        raw = json.load(f)
+    name = IGNORE_LIST_PATH.name
+    if not isinstance(raw, list):
+        raise ValueError(f"{name} must be a list of blocks, one per page. "
+                         f"The older format with \"pages\", \"ranges\" and \"templates\" is no longer supported.")
+
+    rules: list[IgnoreRule] = []
+    for block in raw:
+        if not isinstance(block, dict):
+            raise ValueError(f"{name}: every block must be an object like {{\"page\": ..., \"ignore\": ...}}: {block}")
+        if len(block) > 0 and all(k.startswith("_") for k in block):
+            continue  # a comment
+        unknown = [k for k in block if k not in IGNORE_BLOCK_KEYS and not k.startswith("_")]
+        if unknown:
+            raise ValueError(f"{name}: unknown key(s) {unknown} in {block}, allowed: {sorted(IGNORE_BLOCK_KEYS)}")
+        page = block.get("page")
+        if not isinstance(page, str) or normalize_page_title(page) == "":
+            raise ValueError(f"{name}: every block needs a \"page\": {block}")
+        where = f"page {page}"
+        title = normalize_page_title(page)
+
+        flags = {}
+        for key in ("single_page", "all_subpages"):
+            value = block.get(key)
+            if value is not None and not isinstance(value, bool):
+                raise ValueError(f"{name}: {where}: \"{key}\" must be true or false")
+            flags[key] = value
+
+        number_range = None
+        if "range" in block:
+            r = block["range"]
+            if (not isinstance(r, list) or len(r) != 2
+                    or not all(isinstance(n, int) and not isinstance(n, bool) and n >= 0 for n in r)
+                    or r[0] > r[1]):
+                raise ValueError(f"{name}: {where}: \"range\" must be two numbers, the first not after the "
+                                 f"second, like [1, 9]")
+            number_range = (r[0], r[1])
+
+        if flags["single_page"] is None and flags["all_subpages"] is None and number_range is None:
+            flags["single_page"] = True
+        if not flags["single_page"] and not flags["all_subpages"] and number_range is None:
+            raise ValueError(f"{name}: {where}: this block covers nothing (single_page, range and all_subpages "
+                             f"are all off)")
+
+        ignore = block.get("ignore", "everything")
+        if isinstance(ignore, str):
+            if ignore.strip().lower() != "everything":
+                raise ValueError(f"{name}: {where}: \"ignore\" must be \"everything\" or a list of template names")
+            templates = None
+        else:
+            templates = parse_template_names(ignore, where)
+        rules.append(IgnoreRule(title, bool(flags["single_page"]), number_range, bool(flags["all_subpages"]),
+                                templates))
+    return rules
+
+
+def get_ignore_rules(page_title: str) -> tuple[bool, frozenset[str]]:
+    """(ignore the whole page?, names of templates to keep from the wiki) for a page title.
+    Ignoring everything wins over keeping templates; template names from several blocks are combined."""
+    title = normalize_page_title(page_title)
+    templates: set[str] = set()
+    for rule in load_ignore_list():
+        if rule.matches(title):
+            if rule.templates is None:
+                return True, frozenset()
+            templates |= rule.templates
+    return False, frozenset(templates)
+
+
+def split_into_templates(text: str) -> list[str | Template]:
+    """Split wikitext into an ordered list of plain-text chunks and top-level templates.
+    Concatenating str() of every element gives back the original text."""
+    parsed = parse(text)
+    spans = sorted((t.span, t) for t in parsed.templates)
+    parts: list[str | Template] = []
+    pos = 0
+    for (start, end), template in spans:
+        if start < pos:
+            # nested inside a template that was already taken
+            continue
+        if start > pos:
+            parts.append(text[pos:start])
+        parts.append(template)
+        pos = end
+    if pos < len(text):
+        parts.append(text[pos:])
+    return parts
+
+
+def keep_ignored_templates(original_text: str, new_text: str, ignored: frozenset[str]) -> str:
+    """Replace every template of new_text that is in `ignored` ("*" = all templates) with the
+    template of the same name in original_text. The n-th occurrence of a template in the new
+    text takes the n-th occurrence in the original, whether or not they differ. If the original
+    has no n-th occurrence (for example a brand new page), the new template is kept."""
+    if len(ignored) == 0:
+        return new_text
+
+    def is_ignored(template: Template) -> bool:
+        return "*" in ignored or normalize_template_name(template.name) in ignored
+
+    original_by_name: dict[str, list[str]] = {}
+    for part in split_into_templates(original_text):
+        if isinstance(part, Template) and is_ignored(part):
+            original_by_name.setdefault(normalize_template_name(part.name), []).append(str(part))
+
+    used: dict[str, int] = {}
+    result: list[str] = []
+    for part in split_into_templates(new_text):
+        if isinstance(part, Template) and is_ignored(part):
+            name = normalize_template_name(part.name)
+            index = used.get(name, 0)
+            used[name] = index + 1
+            candidates = original_by_name.get(name, [])
+            if index < len(candidates):
+                result.append(candidates[index])
+                continue
+        result.append(str(part))
+    return "".join(result)
+
+
 def save_page(page: Page | str, text: str, summary: str = "update page page"):
     if isinstance(page, str):
         page = Page(s, page)
-    if page.text.strip() == text.strip():
+    ignore_page, ignored_templates = get_ignore_rules(page.title())
+    if ignore_page:
+        print(f"Ignored {page.title()} (in ignore_list.json)")
         return
+    original = page.text
+    text = keep_ignored_templates(original, text, ignored_templates)
+    if original.strip() == text.strip():
+        return
+    print(f"Changes to {page.title()}:")
+    showDiff(original, text)
     page.text = text
     page.save(summary=summary)
 
