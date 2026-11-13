@@ -325,17 +325,6 @@ IGNORE_BLOCK_KEYS = {"page", "single_page", "range", "all_subpages", "ignore"}
 @cache
 def load_ignore_list() -> list[IgnoreRule]:
     """Reads ignore_list.json: a list with one block per page.
-
-        {
-            "page":         "Some Event/Story",      the page (a title or a full wiki URL, no trailing slash needed)
-            "single_page":  true,                    cover the page itself
-            "range":        [1, 9],                  cover "Some Event/Story/1" to "Some Event/Story/9"
-            "all_subpages": true,                    cover every page below the page, at any depth
-            "ignore":       "everything"             what the bot must leave alone: "everything" (the default) or
-                                                     a list of template names, e.g. ["Story/StoryTop", "Alpha"]
-        }
-
-    Pick any of single_page, range and all_subpages. If you pick none, the block covers the page itself.
     A page can have several blocks. Blocks that only have keys starting with "_" are ignored (comments).
     "*" in a template list means every template."""
     if not IGNORE_LIST_PATH.exists():
@@ -344,8 +333,7 @@ def load_ignore_list() -> list[IgnoreRule]:
         raw = json.load(f)
     name = IGNORE_LIST_PATH.name
     if not isinstance(raw, list):
-        raise ValueError(f"{name} must be a list of blocks, one per page. "
-                         f"The older format with \"pages\", \"ranges\" and \"templates\" is no longer supported.")
+        raise ValueError(f"{name} must be a list of blocks, one per page.")
 
     rules: list[IgnoreRule] = []
     for block in raw:
