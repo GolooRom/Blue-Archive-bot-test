@@ -419,10 +419,12 @@ def split_into_templates(text: str) -> list[str | Template]:
 
 
 def keep_ignored_templates(original_text: str, new_text: str, ignored: frozenset[str]) -> str:
-    """Replace every template of new_text that is in `ignored` ("*" = all templates) with the
-    template of the same name in original_text. The n-th occurrence of a template in the new
-    text takes the n-th occurrence in the original, whether or not they differ. If the original
-    has no n-th occurrence (for example a brand new page), the new template is kept."""
+    """For every template name in `ignored` ("*" = all templates), the wiki page wins: the page ends up with
+    exactly the copies of that template that the wiki page has, in the wiki's order. The n-th copy in the new
+    text is replaced by the n-th copy in the original. If the original has more copies than the new text, the
+    extra ones are added after the last copy of the new text (on their own lines). If the new text has more
+    copies, the extra ones are dropped. If the original has no copy at all (for example a brand new page),
+    the new text's copies are kept. Templates that are not in `ignored` always come from the new text."""
     if len(ignored) == 0:
         return new_text
 
@@ -434,17 +436,30 @@ def keep_ignored_templates(original_text: str, new_text: str, ignored: frozenset
         if isinstance(part, Template) and is_ignored(part):
             original_by_name.setdefault(normalize_template_name(part.name), []).append(str(part))
 
+    new_parts = split_into_templates(new_text)
+    last_slot: dict[str, int] = {}
+    for position, part in enumerate(new_parts):
+        if isinstance(part, Template) and is_ignored(part):
+            last_slot[normalize_template_name(part.name)] = position
+
     used: dict[str, int] = {}
     result: list[str] = []
-    for part in split_into_templates(new_text):
+    for position, part in enumerate(new_parts):
         if isinstance(part, Template) and is_ignored(part):
             name = normalize_template_name(part.name)
+            wiki_copies = original_by_name.get(name, [])
+            if not wiki_copies:
+                result.append(str(part))
+                continue
             index = used.get(name, 0)
             used[name] = index + 1
-            candidates = original_by_name.get(name, [])
-            if index < len(candidates):
-                result.append(candidates[index])
-                continue
+            if index >= len(wiki_copies):
+                continue  # the new text has more copies than the wiki page
+            if position == last_slot[name]:
+                result.append("\n".join(wiki_copies[index:]))  # this copy and every remaining one
+            else:
+                result.append(wiki_copies[index])
+            continue
         result.append(str(part))
     return "".join(result)
 
