@@ -242,7 +242,7 @@ def save_json_page(page: Page | str, obj, summary: str = "update json page"):
         page = Page(s, page)
 
     if get_ignore_rules(page.title())[0]:
-        print(f"Ignored {page.title()} (in ignore_list.json)")
+        print(f"Ignored {page.title()} (on the ignore list)")
         return
 
     if page.text != "":
@@ -267,7 +267,9 @@ def find_template(w: WikiText, name: str) -> Template | None:
     return None
 
 
-IGNORE_LIST_PATH = Path(__file__).parent / "ignore_list.json"
+# The ignore list lives on the wiki so that it can be changed without touching the bot's code.
+# Format: see ignore_list.example.json in the repository.
+IGNORE_LIST_PAGE = "Module:BotIgnoreList/data.json"
 
 
 def normalize_template_name(name: str) -> str:
@@ -291,7 +293,7 @@ def normalize_page_title(title: str) -> str:
 
 def parse_template_names(names, where: str) -> frozenset[str]:
     if not isinstance(names, list) or len(names) == 0 or not all(isinstance(n, str) for n in names):
-        raise ValueError(f"{IGNORE_LIST_PATH.name}: {where}: expected a non-empty list of template names")
+        raise ValueError(f"{IGNORE_LIST_PAGE}: {where}: expected a non-empty list of template names")
     return frozenset("*" if n.strip() == "*" else normalize_template_name(n) for n in names)
 
 
@@ -322,16 +324,26 @@ class IgnoreRule:
 IGNORE_BLOCK_KEYS = {"page", "single_page", "range", "all_subpages", "ignore"}
 
 
+def read_ignore_list_text() -> str:
+    page = Page(s, IGNORE_LIST_PAGE)
+    if not page.exists():
+        raise RuntimeError(f"The ignore list page {IGNORE_LIST_PAGE} does not exist on the wiki. "
+                           f"Create it (an empty list is []) before running the bot.")
+    return page.text
+
+
 @cache
 def load_ignore_list() -> list[IgnoreRule]:
-    """Reads ignore_list.json: a list with one block per page.
+    """Reads the ignore list from the wiki page IGNORE_LIST_PAGE: a list with one block per page.
     A page can have several blocks. Blocks that only have keys starting with "_" are ignored (comments).
-    "*" in a template list means every template."""
-    if not IGNORE_LIST_PATH.exists():
-        return []
-    with open(IGNORE_LIST_PATH, "r", encoding="utf-8") as f:
-        raw = json.load(f)
-    name = IGNORE_LIST_PATH.name
+    "*" in a template list means every template.
+    If the list cannot be read or is invalid, this raises an error, so the bot stops and does not overwrite
+    pages that should have been ignored."""
+    try:
+        raw = json.loads(read_ignore_list_text())
+    except json.JSONDecodeError as e:
+        raise ValueError(f"{IGNORE_LIST_PAGE} is not valid JSON: {e}") from e
+    name = IGNORE_LIST_PAGE
     if not isinstance(raw, list):
         raise ValueError(f"{name} must be a list of blocks, one per page.")
 
@@ -469,7 +481,7 @@ def save_page(page: Page | str, text: str, summary: str = "update page page"):
         page = Page(s, page)
     ignore_page, ignored_templates = get_ignore_rules(page.title())
     if ignore_page:
-        print(f"Ignored {page.title()} (in ignore_list.json)")
+        print(f"Ignored {page.title()} (on the ignore list)")
         return
     original = page.text
     text = keep_ignored_templates(original, text, ignored_templates)

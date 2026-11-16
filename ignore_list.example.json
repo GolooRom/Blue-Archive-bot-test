@@ -1,6 +1,6 @@
 [
     {
-        "_comment": "THIS FILE IS ONLY AN EXAMPLE. The bot never reads it. The list the bot really uses is ignore_list.json. Copy the blocks you want from here into that file.",
+        "_comment": "THIS FILE IS ONLY AN EXAMPLE. The bot never reads it. The list the bot really uses is the wiki page Module:BotIgnoreList/data.json. Copy the blocks you want from here into that page.",
         "_how_it_works": "The list has one block per page. Each block says which pages it applies to and what the bot must not change on them.",
         "_page": "The page. Write a page title or a full https://bluearchive.wiki/wiki/... link. A slash at the end is fine.",
         "_single_page": "true = the block applies to the page itself.",
